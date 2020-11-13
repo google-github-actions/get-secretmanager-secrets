@@ -16,8 +16,7 @@ name: Get Secret Manager secrets
 author: GoogleCloudPlatform
 description: |-
   Get secrets from Google Secret Manager and make their results available as
-  output variables. See https://cloud.google.com/secret-manager for more
-  information about Secret Manager.
+  output variables.
 
 inputs:
   secrets:
