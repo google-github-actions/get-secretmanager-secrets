@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.2.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.1...v0.2.2) (2021-03-05)
+
+
+### Bug Fixes
+
+* Added support for masking multiline secrets ([#9](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/9)) ([#10](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/10)) ([7a6a940](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/7a6a9404f3ef177ec8b310c95a51b8bee20bd09f))
+
 ### [0.2.1](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.0...v0.2.1) (2020-11-14)
 
 
