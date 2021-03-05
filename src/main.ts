@@ -59,7 +59,11 @@ async function run(): Promise<void> {
     // Access and export each secret.
     for (const ref of secretsRefs) {
       const value = await client.accessSecret(ref.selfLink());
-      core.setSecret(value);
+
+      // Split multiline secrets by line break and mask each line.
+      // Read more here: https://github.com/actions/runner/issues/161
+      value.split(/\r\n|\r|\n/g).forEach((line) => core.setSecret(line));
+
       core.setOutput(ref.output, value);
     }
   } catch (error) {
