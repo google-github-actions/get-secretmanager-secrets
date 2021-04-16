@@ -123,8 +123,10 @@ permissions to access the secrets being requested.
 You can provide credentials using the [setup-gcloud][setup-gcloud] action:
 
 ```yaml
-- uses: GoogleCloudPlatform/github-actions/setup-gcloud@master
+- uses: google-github-actions/setup-gcloud@master
   with:
+    project_id: ${{ env.PROJECT_ID}}
+    service_account_key: ${{ secrets.GCP_SA_KEY }}
     export_default_credentials: true
 - uses: google-github-actions/get-secretmanager-secrets@main
 ```
@@ -169,4 +171,4 @@ Credentials.
 [sa]: https://cloud.google.com/iam/docs/creating-managing-service-accounts
 [gh-runners]: https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners
 [gh-secret]: https://help.github.com/en/actions/configuring-and-managing-workflows/creating-and-storing-encrypted-secrets
-[setup-gcloud]: ../setup-gcloud
+[setup-gcloud]: https://github.com/google-github-actions/setup-gcloud
