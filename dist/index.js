@@ -19,7 +19,13 @@ module.exports =
 /******/ 		};
 /******/
 /******/ 		// Execute the module function
-/******/ 		modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+/******/ 		var threw = true;
+/******/ 		try {
+/******/ 			modules[moduleId].call(module.exports, module, module.exports, __webpack_require__);
+/******/ 			threw = false;
+/******/ 		} finally {
+/******/ 			if(threw) delete installedModules[moduleId];
+/******/ 		}
 /******/
 /******/ 		// Flag the module as loaded
 /******/ 		module.l = true;
@@ -538,9 +544,9 @@ module.exports = require("tls");
 /***/ }),
 
 /***/ 18:
-/***/ (function() {
+/***/ (function(module) {
 
-eval("require")("encoding");
+module.exports = eval("require")("encoding");
 
 
 /***/ }),
@@ -791,6 +797,374 @@ function omit(obj, ...keys) {
     return ret;
 }
 //# sourceMappingURL=agent.js.map
+
+/***/ }),
+
+/***/ 48:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.BaseExternalAccountClient = exports.CLOUD_RESOURCE_MANAGER = exports.EXTERNAL_ACCOUNT_TYPE = exports.EXPIRATION_TIME_OFFSET = void 0;
+const stream = __webpack_require__(413);
+const authclient_1 = __webpack_require__(616);
+const sts = __webpack_require__(732);
+/**
+ * The required token exchange grant_type: rfc8693#section-2.1
+ */
+const STS_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
+/**
+ * The requested token exchange requested_token_type: rfc8693#section-2.1
+ */
+const STS_REQUEST_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
+/** The default OAuth scope to request when none is provided. */
+const DEFAULT_OAUTH_SCOPE = 'https://www.googleapis.com/auth/cloud-platform';
+/**
+ * Offset to take into account network delays and server clock skews.
+ */
+exports.EXPIRATION_TIME_OFFSET = 5 * 60 * 1000;
+/**
+ * The credentials JSON file type for external account clients.
+ * There are 3 types of JSON configs:
+ * 1. authorized_user => Google end user credential
+ * 2. service_account => Google service account credential
+ * 3. external_Account => non-GCP service (eg. AWS, Azure, K8s)
+ */
+exports.EXTERNAL_ACCOUNT_TYPE = 'external_account';
+/** Cloud resource manager URL used to retrieve project information. */
+exports.CLOUD_RESOURCE_MANAGER = 'https://cloudresourcemanager.googleapis.com/v1/projects/';
+/**
+ * Base external account client. This is used to instantiate AuthClients for
+ * exchanging external account credentials for GCP access token and authorizing
+ * requests to GCP APIs.
+ * The base class implements common logic for exchanging various type of
+ * external credentials for GCP access token. The logic of determining and
+ * retrieving the external credential based on the environment and
+ * credential_source will be left for the subclasses.
+ */
+class BaseExternalAccountClient extends authclient_1.AuthClient {
+    /**
+     * Instantiate a BaseExternalAccountClient instance using the provided JSON
+     * object loaded from an external account credentials file.
+     * @param options The external account options object typically loaded
+     *   from the external account JSON credential file.
+     * @param additionalOptions Optional additional behavior customization
+     *   options. These currently customize expiration threshold time and
+     *   whether to retry on 401/403 API request errors.
+     */
+    constructor(options, additionalOptions) {
+        super();
+        if (options.type !== exports.EXTERNAL_ACCOUNT_TYPE) {
+            throw new Error(`Expected "${exports.EXTERNAL_ACCOUNT_TYPE}" type but ` +
+                `received "${options.type}"`);
+        }
+        const clientAuth = options.client_id
+            ? {
+                confidentialClientType: 'basic',
+                clientId: options.client_id,
+                clientSecret: options.client_secret,
+            }
+            : undefined;
+        this.stsCredential = new sts.StsCredentials(options.token_url, clientAuth);
+        // Default OAuth scope. This could be overridden via public property.
+        this.scopes = [DEFAULT_OAUTH_SCOPE];
+        this.cachedAccessToken = null;
+        this.audience = options.audience;
+        this.subjectTokenType = options.subject_token_type;
+        this.quotaProjectId = options.quota_project_id;
+        this.serviceAccountImpersonationUrl =
+            options.service_account_impersonation_url;
+        // As threshold could be zero,
+        // eagerRefreshThresholdMillis || EXPIRATION_TIME_OFFSET will override the
+        // zero value.
+        if (typeof (additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.eagerRefreshThresholdMillis) !== 'number') {
+            this.eagerRefreshThresholdMillis = exports.EXPIRATION_TIME_OFFSET;
+        }
+        else {
+            this.eagerRefreshThresholdMillis = additionalOptions
+                .eagerRefreshThresholdMillis;
+        }
+        this.forceRefreshOnFailure = !!(additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.forceRefreshOnFailure);
+        this.projectId = null;
+        this.projectNumber = this.getProjectNumber(this.audience);
+    }
+    /**
+     * Provides a mechanism to inject GCP access tokens directly.
+     * When the provided credential expires, a new credential, using the
+     * external account options, is retrieved.
+     * @param credentials The Credentials object to set on the current client.
+     */
+    setCredentials(credentials) {
+        super.setCredentials(credentials);
+        this.cachedAccessToken = credentials;
+    }
+    /**
+     * @return A promise that resolves with the current GCP access token
+     *   response. If the current credential is expired, a new one is retrieved.
+     */
+    async getAccessToken() {
+        // If cached access token is unavailable or expired, force refresh.
+        if (!this.cachedAccessToken || this.isExpired(this.cachedAccessToken)) {
+            await this.refreshAccessTokenAsync();
+        }
+        // Return GCP access token in GetAccessTokenResponse format.
+        return {
+            token: this.cachedAccessToken.access_token,
+            res: this.cachedAccessToken.res,
+        };
+    }
+    /**
+     * The main authentication interface. It takes an optional url which when
+     * present is the endpoint> being accessed, and returns a Promise which
+     * resolves with authorization header fields.
+     *
+     * The result has the form:
+     * { Authorization: 'Bearer <access_token_value>' }
+     */
+    async getRequestHeaders() {
+        const accessTokenResponse = await this.getAccessToken();
+        const headers = {
+            Authorization: `Bearer ${accessTokenResponse.token}`,
+        };
+        return this.addSharedMetadataHeaders(headers);
+    }
+    request(opts, callback) {
+        if (callback) {
+            this.requestAsync(opts).then(r => callback(null, r), e => {
+                return callback(e, e.response);
+            });
+        }
+        else {
+            return this.requestAsync(opts);
+        }
+    }
+    /**
+     * @return A promise that resolves with the project ID corresponding to the
+     *   current workload identity pool. When not determinable, this resolves with
+     *   null.
+     *   This is introduced to match the current pattern of using the Auth
+     *   library:
+     *   const projectId = await auth.getProjectId();
+     *   const url = `https://dns.googleapis.com/dns/v1/projects/${projectId}`;
+     *   const res = await client.request({ url });
+     *   The resource may not have permission
+     *   (resourcemanager.projects.get) to call this API or the required
+     *   scopes may not be selected:
+     *   https://cloud.google.com/resource-manager/reference/rest/v1/projects/get#authorization-scopes
+     */
+    async getProjectId() {
+        if (this.projectId) {
+            // Return previously determined project ID.
+            return this.projectId;
+        }
+        else if (this.projectNumber) {
+            // Preferable not to use request() to avoid retrial policies.
+            const headers = await this.getRequestHeaders();
+            const response = await this.transporter.request({
+                headers,
+                url: `${exports.CLOUD_RESOURCE_MANAGER}${this.projectNumber}`,
+                responseType: 'json',
+            });
+            this.projectId = response.data.projectId;
+            return this.projectId;
+        }
+        return null;
+    }
+    /**
+     * Authenticates the provided HTTP request, processes it and resolves with the
+     * returned response.
+     * @param opts The HTTP request options.
+     * @param retry Whether the current attempt is a retry after a failed attempt.
+     * @return A promise that resolves with the successful response.
+     */
+    async requestAsync(opts, retry = false) {
+        let response;
+        try {
+            const requestHeaders = await this.getRequestHeaders();
+            opts.headers = opts.headers || {};
+            if (requestHeaders && requestHeaders['x-goog-user-project']) {
+                opts.headers['x-goog-user-project'] =
+                    requestHeaders['x-goog-user-project'];
+            }
+            if (requestHeaders && requestHeaders.Authorization) {
+                opts.headers.Authorization = requestHeaders.Authorization;
+            }
+            response = await this.transporter.request(opts);
+        }
+        catch (e) {
+            const res = e.response;
+            if (res) {
+                const statusCode = res.status;
+                // Retry the request for metadata if the following criteria are true:
+                // - We haven't already retried.  It only makes sense to retry once.
+                // - The response was a 401 or a 403
+                // - The request didn't send a readableStream
+                // - forceRefreshOnFailure is true
+                const isReadableStream = res.config.data instanceof stream.Readable;
+                const isAuthErr = statusCode === 401 || statusCode === 403;
+                if (!retry &&
+                    isAuthErr &&
+                    !isReadableStream &&
+                    this.forceRefreshOnFailure) {
+                    await this.refreshAccessTokenAsync();
+                    return await this.requestAsync(opts, true);
+                }
+            }
+            throw e;
+        }
+        return response;
+    }
+    /**
+     * Forces token refresh, even if unexpired tokens are currently cached.
+     * External credentials are exchanged for GCP access tokens via the token
+     * exchange endpoint and other settings provided in the client options
+     * object.
+     * If the service_account_impersonation_url is provided, an additional
+     * step to exchange the external account GCP access token for a service
+     * account impersonated token is performed.
+     * @return A promise that resolves with the fresh GCP access tokens.
+     */
+    async refreshAccessTokenAsync() {
+        // Retrieve the external credential.
+        const subjectToken = await this.retrieveSubjectToken();
+        // Construct the STS credentials options.
+        const stsCredentialsOptions = {
+            grantType: STS_GRANT_TYPE,
+            audience: this.audience,
+            requestedTokenType: STS_REQUEST_TOKEN_TYPE,
+            subjectToken,
+            subjectTokenType: this.subjectTokenType,
+            // generateAccessToken requires the provided access token to have
+            // scopes:
+            // https://www.googleapis.com/auth/iam or
+            // https://www.googleapis.com/auth/cloud-platform
+            // The new service account access token scopes will match the user
+            // provided ones.
+            scope: this.serviceAccountImpersonationUrl
+                ? [DEFAULT_OAUTH_SCOPE]
+                : this.getScopesArray(),
+        };
+        // Exchange the external credentials for a GCP access token.
+        const stsResponse = await this.stsCredential.exchangeToken(stsCredentialsOptions);
+        if (this.serviceAccountImpersonationUrl) {
+            this.cachedAccessToken = await this.getImpersonatedAccessToken(stsResponse.access_token);
+        }
+        else {
+            // Save response in cached access token.
+            this.cachedAccessToken = {
+                access_token: stsResponse.access_token,
+                expiry_date: new Date().getTime() + stsResponse.expires_in * 1000,
+                res: stsResponse.res,
+            };
+        }
+        // Save credentials.
+        this.credentials = {};
+        Object.assign(this.credentials, this.cachedAccessToken);
+        delete this.credentials.res;
+        // Trigger tokens event to notify external listeners.
+        this.emit('tokens', {
+            refresh_token: null,
+            expiry_date: this.cachedAccessToken.expiry_date,
+            access_token: this.cachedAccessToken.access_token,
+            token_type: 'Bearer',
+            id_token: null,
+        });
+        // Return the cached access token.
+        return this.cachedAccessToken;
+    }
+    /**
+     * Returns the workload identity pool project number if it is determinable
+     * from the audience resource name.
+     * @param audience The STS audience used to determine the project number.
+     * @return The project number associated with the workload identity pool, if
+     *   this can be determined from the STS audience field. Otherwise, null is
+     *   returned.
+     */
+    getProjectNumber(audience) {
+        // STS audience pattern:
+        // //iam.googleapis.com/projects/$PROJECT_NUMBER/locations/...
+        const match = audience.match(/\/projects\/([^/]+)/);
+        if (!match) {
+            return null;
+        }
+        return match[1];
+    }
+    /**
+     * Exchanges an external account GCP access token for a service
+     * account impersonated access token using iamcredentials
+     * GenerateAccessToken API.
+     * @param token The access token to exchange for a service account access
+     *   token.
+     * @return A promise that resolves with the service account impersonated
+     *   credentials response.
+     */
+    async getImpersonatedAccessToken(token) {
+        const opts = {
+            url: this.serviceAccountImpersonationUrl,
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`,
+            },
+            data: {
+                scope: this.getScopesArray(),
+            },
+            responseType: 'json',
+        };
+        const response = await this.transporter.request(opts);
+        const successResponse = response.data;
+        return {
+            access_token: successResponse.accessToken,
+            // Convert from ISO format to timestamp.
+            expiry_date: new Date(successResponse.expireTime).getTime(),
+            res: response,
+        };
+    }
+    /**
+     * Returns whether the provided credentials are expired or not.
+     * If there is no expiry time, assumes the token is not expired or expiring.
+     * @param accessToken The credentials to check for expiration.
+     * @return Whether the credentials are expired or not.
+     */
+    isExpired(accessToken) {
+        const now = new Date().getTime();
+        return accessToken.expiry_date
+            ? now >= accessToken.expiry_date - this.eagerRefreshThresholdMillis
+            : false;
+    }
+    /**
+     * @return The list of scopes for the requested GCP access token.
+     */
+    getScopesArray() {
+        // Since scopes can be provided as string or array, the type should
+        // be normalized.
+        if (typeof this.scopes === 'string') {
+            return [this.scopes];
+        }
+        else if (typeof this.scopes === 'undefined') {
+            return [DEFAULT_OAUTH_SCOPE];
+        }
+        else {
+            return this.scopes;
+        }
+    }
+}
+exports.BaseExternalAccountClient = BaseExternalAccountClient;
+//# sourceMappingURL=baseexternalclient.js.map
 
 /***/ }),
 
@@ -1635,6 +2009,7 @@ formatters.O = function (v) {
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.toCommandValue = void 0;
 /**
  * Sanitizes an input into a string so it can be passed into issueCommand safely
  * @param input input to sanitize into a string
@@ -1666,14 +2041,27 @@ module.exports = require("os");
 "use strict";
 
 // For internal use, subject to change.
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
 var __importStar = (this && this.__importStar) || function (mod) {
     if (mod && mod.__esModule) return mod;
     var result = {};
-    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
-    result["default"] = mod;
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.issueCommand = void 0;
 // We use any as a valid input type
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const fs = __importStar(__webpack_require__(747));
@@ -3572,6 +3960,25 @@ module.exports = require("child_process");
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.prototype.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -3580,13 +3987,6 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         function step(result) { result.done ? resolve(result.value) : adopt(result.value).then(fulfilled, rejected); }
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
-};
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
-    result["default"] = mod;
-    return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const core = __importStar(__webpack_require__(470));
@@ -6407,99 +6807,6 @@ util.makeLink = function(path, query, fragment) {
   return path +
     ((qstr.length > 0) ? ('?' + qstr) : '') +
     ((fragment.length > 0) ? ('#' + fragment) : '');
-};
-
-/**
- * Follows a path of keys deep into an object hierarchy and set a value.
- * If a key does not exist or it's value is not an object, create an
- * object in it's place. This can be destructive to a object tree if
- * leaf nodes are given as non-final path keys.
- * Used to avoid exceptions from missing parts of the path.
- *
- * @param object the starting object.
- * @param keys an array of string keys.
- * @param value the value to set.
- */
-util.setPath = function(object, keys, value) {
-  // need to start at an object
-  if(typeof(object) === 'object' && object !== null) {
-    var i = 0;
-    var len = keys.length;
-    while(i < len) {
-      var next = keys[i++];
-      if(i == len) {
-        // last
-        object[next] = value;
-      } else {
-        // more
-        var hasNext = (next in object);
-        if(!hasNext ||
-          (hasNext && typeof(object[next]) !== 'object') ||
-          (hasNext && object[next] === null)) {
-          object[next] = {};
-        }
-        object = object[next];
-      }
-    }
-  }
-};
-
-/**
- * Follows a path of keys deep into an object hierarchy and return a value.
- * If a key does not exist, create an object in it's place.
- * Used to avoid exceptions from missing parts of the path.
- *
- * @param object the starting object.
- * @param keys an array of string keys.
- * @param _default value to return if path not found.
- *
- * @return the value at the path if found, else default if given, else
- *         undefined.
- */
-util.getPath = function(object, keys, _default) {
-  var i = 0;
-  var len = keys.length;
-  var hasNext = true;
-  while(hasNext && i < len &&
-    typeof(object) === 'object' && object !== null) {
-    var next = keys[i++];
-    hasNext = next in object;
-    if(hasNext) {
-      object = object[next];
-    }
-  }
-  return (hasNext ? object : _default);
-};
-
-/**
- * Follow a path of keys deep into an object hierarchy and delete the
- * last one. If a key does not exist, do nothing.
- * Used to avoid exceptions from missing parts of the path.
- *
- * @param object the starting object.
- * @param keys an array of string keys.
- */
-util.deletePath = function(object, keys) {
-  // need to start at an object
-  if(typeof(object) === 'object' && object !== null) {
-    var i = 0;
-    var len = keys.length;
-    while(i < len) {
-      var next = keys[i++];
-      if(i == len) {
-        // last
-        delete object[next];
-      } else {
-        // more
-        if(!(next in object) ||
-          (typeof(object[next]) !== 'object') ||
-          (object[next] === null)) {
-           break;
-        }
-        object = object[next];
-      }
-    }
-  }
 };
 
 /**
@@ -12996,6 +13303,7 @@ module.exports = getParamBytesForAlg;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.LoginTicket = void 0;
 class LoginTicket {
     /**
      * Create a simple class to extract user ID from an ID Token
@@ -13045,109 +13353,6 @@ exports.LoginTicket = LoginTicket;
 /***/ (function(module) {
 
 module.exports = require("https");
-
-/***/ }),
-
-/***/ 217:
-/***/ (function(module) {
-
-"use strict";
-
-
-/**
- * @param typeMap [Object] Map of MIME type -> Array[extensions]
- * @param ...
- */
-function Mime() {
-  this._types = Object.create(null);
-  this._extensions = Object.create(null);
-
-  for (var i = 0; i < arguments.length; i++) {
-    this.define(arguments[i]);
-  }
-
-  this.define = this.define.bind(this);
-  this.getType = this.getType.bind(this);
-  this.getExtension = this.getExtension.bind(this);
-}
-
-/**
- * Define mimetype -> extension mappings.  Each key is a mime-type that maps
- * to an array of extensions associated with the type.  The first extension is
- * used as the default extension for the type.
- *
- * e.g. mime.define({'audio/ogg', ['oga', 'ogg', 'spx']});
- *
- * If a type declares an extension that has already been defined, an error will
- * be thrown.  To suppress this error and force the extension to be associated
- * with the new type, pass `force`=true.  Alternatively, you may prefix the
- * extension with "*" to map the type to extension, without mapping the
- * extension to the type.
- *
- * e.g. mime.define({'audio/wav', ['wav']}, {'audio/x-wav', ['*wav']});
- *
- *
- * @param map (Object) type definitions
- * @param force (Boolean) if true, force overriding of existing definitions
- */
-Mime.prototype.define = function(typeMap, force) {
-  for (var type in typeMap) {
-    var extensions = typeMap[type].map(function(t) {return t.toLowerCase()});
-    type = type.toLowerCase();
-
-    for (var i = 0; i < extensions.length; i++) {
-      var ext = extensions[i];
-
-      // '*' prefix = not the preferred type for this extension.  So fixup the
-      // extension, and skip it.
-      if (ext[0] == '*') {
-        continue;
-      }
-
-      if (!force && (ext in this._types)) {
-        throw new Error(
-          'Attempt to change mapping for "' + ext +
-          '" extension from "' + this._types[ext] + '" to "' + type +
-          '". Pass `force=true` to allow this, otherwise remove "' + ext +
-          '" from the list of extensions for "' + type + '".'
-        );
-      }
-
-      this._types[ext] = type;
-    }
-
-    // Use first extension as default
-    if (force || !this._extensions[type]) {
-      var ext = extensions[0];
-      this._extensions[type] = (ext[0] != '*') ? ext : ext.substr(1)
-    }
-  }
-};
-
-/**
- * Lookup a mime type based on extension
- */
-Mime.prototype.getType = function(path) {
-  path = String(path);
-  var last = path.replace(/^.*[/\\]/, '').toLowerCase();
-  var ext = last.replace(/^.*\./, '').toLowerCase();
-
-  var hasPath = last.length < path.length;
-  var hasDot = ext.length < last.length - 1;
-
-  return (hasDot || !hasPath) && this._types[ext] || null;
-};
-
-/**
- * Return file extension associated with a mime type
- */
-Mime.prototype.getExtension = function(type) {
-  type = /^\s*([^;\s]*)/.test(type) && RegExp.$1;
-  return type && this._extensions[type.toLowerCase()] || null;
-};
-
-module.exports = Mime;
-
 
 /***/ }),
 
@@ -16982,7 +17187,8 @@ pki.verifyCertificateChain = function(caStore, chain, options) {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
-// tslint:disable no-any
+exports.GaxiosError = void 0;
+/* eslint-disable @typescript-eslint/no-explicit-any */
 class GaxiosError extends Error {
     constructor(message, options, response) {
         super(message);
@@ -17250,6 +17456,7 @@ var JSON = module.exports;
 
         case 'boolean':
         case 'null':
+        case 'bigint':
 
 // If the value is a boolean or null, convert it to a string. Note:
 // typeof null does not produce 'null'. The case is included here in
@@ -17581,9 +17788,9 @@ module.exports = VerifyStream;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Compute = void 0;
 const arrify = __webpack_require__(155);
 const gcpMetadata = __webpack_require__(479);
-const messages = __webpack_require__(352);
 const oauth2client_1 = __webpack_require__(449);
 class Compute extends oauth2client_1.OAuth2Client {
     /**
@@ -17601,23 +17808,12 @@ class Compute extends oauth2client_1.OAuth2Client {
         this.scopes = arrify(options.scopes);
     }
     /**
-     * Indicates whether the credential requires scopes to be created by calling
-     * createdScoped before use.
-     * @deprecated
-     * @return Boolean indicating if scope is required.
-     */
-    createScopedRequired() {
-        // On compute engine, scopes are specified at the compute instance's
-        // creation time, and cannot be changed. For this reason, always return
-        // false.
-        messages.warn(messages.COMPUTE_CREATE_SCOPED_DEPRECATED);
-        return false;
-    }
-    /**
      * Refreshes the access token.
      * @param refreshToken Unused parameter
      */
-    async refreshTokenNoCache(refreshToken) {
+    async refreshTokenNoCache(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    refreshToken) {
         const tokenPath = `service-accounts/${this.serviceAccountEmail}/token`;
         let data;
         try {
@@ -17915,6 +18111,7 @@ module.exports = isStream;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.IdTokenClient = void 0;
 const oauth2client_1 = __webpack_require__(449);
 class IdTokenClient extends oauth2client_1.OAuth2Client {
     /**
@@ -17928,7 +18125,9 @@ class IdTokenClient extends oauth2client_1.OAuth2Client {
         this.targetAudience = options.targetAudience;
         this.idTokenProvider = options.idTokenProvider;
     }
-    async getRequestMetadataAsync(url) {
+    async getRequestMetadataAsync(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    url) {
         if (!this.credentials.id_token ||
             (this.credentials.expiry_date || 0) < Date.now()) {
             const idToken = await this.idTokenProvider.fetchIdToken(this.targetAudience);
@@ -17959,6 +18158,14 @@ exports.IdTokenClient = IdTokenClient;
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
 var BigNumber = null;
+
+// regexpxs extracted from
+// (c) BSD-3-Clause
+// https://github.com/fastify/secure-json-parse/graphs/contributors and https://github.com/hapijs/bourne/graphs/contributors
+
+const suspectProtoRx = /(?:_|\\u005[Ff])(?:_|\\u005[Ff])(?:p|\\u0070)(?:r|\\u0072)(?:o|\\u006[Ff])(?:t|\\u0074)(?:o|\\u006[Ff])(?:_|\\u005[Ff])(?:_|\\u005[Ff])/;
+const suspectConstructorRx = /(?:c|\\u0063)(?:o|\\u006[Ff])(?:n|\\u006[Ee])(?:s|\\u0073)(?:t|\\u0074)(?:r|\\u0072)(?:u|\\u0075)(?:c|\\u0063)(?:t|\\u0074)(?:o|\\u006[Ff])(?:r|\\u0072)/;
+
 /*
     json_parse.js
     2012-06-20
@@ -18022,324 +18229,375 @@ var BigNumber = null;
 */
 
 var json_parse = function (options) {
-    "use strict";
+  'use strict';
 
-// This is a function that can parse a JSON text, producing a JavaScript
-// data structure. It is a simple, recursive descent parser. It does not use
-// eval or regular expressions, so it can be used as a model for implementing
-// a JSON parser in other languages.
+  // This is a function that can parse a JSON text, producing a JavaScript
+  // data structure. It is a simple, recursive descent parser. It does not use
+  // eval or regular expressions, so it can be used as a model for implementing
+  // a JSON parser in other languages.
 
-// We are defining the function inside of another function to avoid creating
-// global variables.
+  // We are defining the function inside of another function to avoid creating
+  // global variables.
 
+  // Default options one can override by passing options to the parse()
+  var _options = {
+    strict: false, // not being strict means do not generate syntax errors for "duplicate key"
+    storeAsString: false, // toggles whether the values should be stored as BigNumber (default) or a string
+    alwaysParseAsBig: false, // toggles whether all numbers should be Big
+    useNativeBigInt: false, // toggles whether to use native BigInt instead of bignumber.js
+    protoAction: 'error',
+    constructorAction: 'error',
+  };
 
-// Default options one can override by passing options to the parse()
-    var _options = {
-        "strict": false,  // not being strict means do not generate syntax errors for "duplicate key"
-        "storeAsString": false // toggles whether the values should be stored as BigNumber (default) or a string
-    };
+  // If there are options, then use them to override the default _options
+  if (options !== undefined && options !== null) {
+    if (options.strict === true) {
+      _options.strict = true;
+    }
+    if (options.storeAsString === true) {
+      _options.storeAsString = true;
+    }
+    _options.alwaysParseAsBig =
+      options.alwaysParseAsBig === true ? options.alwaysParseAsBig : false;
+    _options.useNativeBigInt =
+      options.useNativeBigInt === true ? options.useNativeBigInt : false;
 
-
-// If there are options, then use them to override the default _options
-    if (options !== undefined && options !== null) {
-        if (options.strict === true) {
-            _options.strict = true;
-        }
-        if (options.storeAsString === true) {
-            _options.storeAsString = true;
-        }
+    if (typeof options.constructorAction !== 'undefined') {
+      if (
+        options.constructorAction === 'error' ||
+        options.constructorAction === 'ignore' ||
+        options.constructorAction === 'preserve'
+      ) {
+        _options.constructorAction = options.constructorAction;
+      } else {
+        throw new Error(
+          `Incorrect value for constructorAction option, must be "error", "ignore" or undefined but passed ${options.constructorAction}`
+        );
+      }
     }
 
+    if (typeof options.protoAction !== 'undefined') {
+      if (
+        options.protoAction === 'error' ||
+        options.protoAction === 'ignore' ||
+        options.protoAction === 'preserve'
+      ) {
+        _options.protoAction = options.protoAction;
+      } else {
+        throw new Error(
+          `Incorrect value for protoAction option, must be "error", "ignore" or undefined but passed ${options.protoAction}`
+        );
+      }
+    }
+  }
 
-    var at,     // The index of the current character
-        ch,     // The current character
-        escapee = {
-            '"':  '"',
-            '\\': '\\',
-            '/':  '/',
-            b:    '\b',
-            f:    '\f',
-            n:    '\n',
-            r:    '\r',
-            t:    '\t'
-        },
-        text,
+  var at, // The index of the current character
+    ch, // The current character
+    escapee = {
+      '"': '"',
+      '\\': '\\',
+      '/': '/',
+      b: '\b',
+      f: '\f',
+      n: '\n',
+      r: '\r',
+      t: '\t',
+    },
+    text,
+    error = function (m) {
+      // Call error when something is wrong.
 
-        error = function (m) {
+      throw {
+        name: 'SyntaxError',
+        message: m,
+        at: at,
+        text: text,
+      };
+    },
+    next = function (c) {
+      // If a c parameter is provided, verify that it matches the current character.
 
-// Call error when something is wrong.
+      if (c && c !== ch) {
+        error("Expected '" + c + "' instead of '" + ch + "'");
+      }
 
-            throw {
-                name:    'SyntaxError',
-                message: m,
-                at:      at,
-                text:    text
-            };
-        },
+      // Get the next character. When there are no more characters,
+      // return the empty string.
 
-        next = function (c) {
+      ch = text.charAt(at);
+      at += 1;
+      return ch;
+    },
+    number = function () {
+      // Parse a number value.
 
-// If a c parameter is provided, verify that it matches the current character.
+      var number,
+        string = '';
 
-            if (c && c !== ch) {
-                error("Expected '" + c + "' instead of '" + ch + "'");
-            }
+      if (ch === '-') {
+        string = '-';
+        next('-');
+      }
+      while (ch >= '0' && ch <= '9') {
+        string += ch;
+        next();
+      }
+      if (ch === '.') {
+        string += '.';
+        while (next() && ch >= '0' && ch <= '9') {
+          string += ch;
+        }
+      }
+      if (ch === 'e' || ch === 'E') {
+        string += ch;
+        next();
+        if (ch === '-' || ch === '+') {
+          string += ch;
+          next();
+        }
+        while (ch >= '0' && ch <= '9') {
+          string += ch;
+          next();
+        }
+      }
+      number = +string;
+      if (!isFinite(number)) {
+        error('Bad number');
+      } else {
+        if (BigNumber == null) BigNumber = __webpack_require__(421);
+        //if (number > 9007199254740992 || number < -9007199254740992)
+        // Bignumber has stricter check: everything with length > 15 digits disallowed
+        if (string.length > 15)
+          return _options.storeAsString
+            ? string
+            : _options.useNativeBigInt
+            ? BigInt(string)
+            : new BigNumber(string);
+        else
+          return !_options.alwaysParseAsBig
+            ? number
+            : _options.useNativeBigInt
+            ? BigInt(number)
+            : new BigNumber(number);
+      }
+    },
+    string = function () {
+      // Parse a string value.
 
-// Get the next character. When there are no more characters,
-// return the empty string.
+      var hex,
+        i,
+        string = '',
+        uffff;
 
-            ch = text.charAt(at);
-            at += 1;
-            return ch;
-        },
+      // When parsing for string values, we must look for " and \ characters.
 
-        number = function () {
-// Parse a number value.
-
-            var number,
-                string = '';
-
-            if (ch === '-') {
-                string = '-';
-                next('-');
-            }
-            while (ch >= '0' && ch <= '9') {
-                string += ch;
-                next();
-            }
-            if (ch === '.') {
-                string += '.';
-                while (next() && ch >= '0' && ch <= '9') {
-                    string += ch;
+      if (ch === '"') {
+        var startAt = at;
+        while (next()) {
+          if (ch === '"') {
+            if (at - 1 > startAt) string += text.substring(startAt, at - 1);
+            next();
+            return string;
+          }
+          if (ch === '\\') {
+            if (at - 1 > startAt) string += text.substring(startAt, at - 1);
+            next();
+            if (ch === 'u') {
+              uffff = 0;
+              for (i = 0; i < 4; i += 1) {
+                hex = parseInt(next(), 16);
+                if (!isFinite(hex)) {
+                  break;
                 }
-            }
-            if (ch === 'e' || ch === 'E') {
-                string += ch;
-                next();
-                if (ch === '-' || ch === '+') {
-                    string += ch;
-                    next();
-                }
-                while (ch >= '0' && ch <= '9') {
-                    string += ch;
-                    next();
-                }
-            }
-            number = +string;
-            if (!isFinite(number)) {
-                error("Bad number");
+                uffff = uffff * 16 + hex;
+              }
+              string += String.fromCharCode(uffff);
+            } else if (typeof escapee[ch] === 'string') {
+              string += escapee[ch];
             } else {
-                if (BigNumber == null)
-                  BigNumber = __webpack_require__(421);
-                //if (number > 9007199254740992 || number < -9007199254740992)
-                // Bignumber has stricter check: everything with length > 15 digits disallowed
-                if (string.length > 15)
-                   return (_options.storeAsString === true) ? string : new BigNumber(string);
-                return number;
+              break;
             }
-        },
-
-        string = function () {
-
-// Parse a string value.
-
-            var hex,
-                i,
-                string = '',
-                uffff;
-
-// When parsing for string values, we must look for " and \ characters.
-
-            if (ch === '"') {
-                while (next()) {
-                    if (ch === '"') {
-                        next();
-                        return string;
-                    }
-                    if (ch === '\\') {
-                        next();
-                        if (ch === 'u') {
-                            uffff = 0;
-                            for (i = 0; i < 4; i += 1) {
-                                hex = parseInt(next(), 16);
-                                if (!isFinite(hex)) {
-                                    break;
-                                }
-                                uffff = uffff * 16 + hex;
-                            }
-                            string += String.fromCharCode(uffff);
-                        } else if (typeof escapee[ch] === 'string') {
-                            string += escapee[ch];
-                        } else {
-                            break;
-                        }
-                    } else {
-                        string += ch;
-                    }
-                }
-            }
-            error("Bad string");
-        },
-
-        white = function () {
-
-// Skip whitespace.
-
-            while (ch && ch <= ' ') {
-                next();
-            }
-        },
-
-        word = function () {
-
-// true, false, or null.
-
-            switch (ch) {
-            case 't':
-                next('t');
-                next('r');
-                next('u');
-                next('e');
-                return true;
-            case 'f':
-                next('f');
-                next('a');
-                next('l');
-                next('s');
-                next('e');
-                return false;
-            case 'n':
-                next('n');
-                next('u');
-                next('l');
-                next('l');
-                return null;
-            }
-            error("Unexpected '" + ch + "'");
-        },
-
-        value,  // Place holder for the value function.
-
-        array = function () {
-
-// Parse an array value.
-
-            var array = [];
-
-            if (ch === '[') {
-                next('[');
-                white();
-                if (ch === ']') {
-                    next(']');
-                    return array;   // empty array
-                }
-                while (ch) {
-                    array.push(value());
-                    white();
-                    if (ch === ']') {
-                        next(']');
-                        return array;
-                    }
-                    next(',');
-                    white();
-                }
-            }
-            error("Bad array");
-        },
-
-        object = function () {
-
-// Parse an object value.
-
-            var key,
-                object = {};
-
-            if (ch === '{') {
-                next('{');
-                white();
-                if (ch === '}') {
-                    next('}');
-                    return object;   // empty object
-                }
-                while (ch) {
-                    key = string();
-                    white();
-                    next(':');
-                    if (_options.strict === true && Object.hasOwnProperty.call(object, key)) {
-                        error('Duplicate key "' + key + '"');
-                    }
-                    object[key] = value();
-                    white();
-                    if (ch === '}') {
-                        next('}');
-                        return object;
-                    }
-                    next(',');
-                    white();
-                }
-            }
-            error("Bad object");
-        };
-
-    value = function () {
-
-// Parse a JSON value. It could be an object, an array, a string, a number,
-// or a word.
-
-        white();
-        switch (ch) {
-        case '{':
-            return object();
-        case '[':
-            return array();
-        case '"':
-            return string();
-        case '-':
-            return number();
-        default:
-            return ch >= '0' && ch <= '9' ? number() : word();
+            startAt = at;
+          }
         }
+      }
+      error('Bad string');
+    },
+    white = function () {
+      // Skip whitespace.
+
+      while (ch && ch <= ' ') {
+        next();
+      }
+    },
+    word = function () {
+      // true, false, or null.
+
+      switch (ch) {
+        case 't':
+          next('t');
+          next('r');
+          next('u');
+          next('e');
+          return true;
+        case 'f':
+          next('f');
+          next('a');
+          next('l');
+          next('s');
+          next('e');
+          return false;
+        case 'n':
+          next('n');
+          next('u');
+          next('l');
+          next('l');
+          return null;
+      }
+      error("Unexpected '" + ch + "'");
+    },
+    value, // Place holder for the value function.
+    array = function () {
+      // Parse an array value.
+
+      var array = [];
+
+      if (ch === '[') {
+        next('[');
+        white();
+        if (ch === ']') {
+          next(']');
+          return array; // empty array
+        }
+        while (ch) {
+          array.push(value());
+          white();
+          if (ch === ']') {
+            next(']');
+            return array;
+          }
+          next(',');
+          white();
+        }
+      }
+      error('Bad array');
+    },
+    object = function () {
+      // Parse an object value.
+
+      var key,
+        object = Object.create(null);
+
+      if (ch === '{') {
+        next('{');
+        white();
+        if (ch === '}') {
+          next('}');
+          return object; // empty object
+        }
+        while (ch) {
+          key = string();
+          white();
+          next(':');
+          if (
+            _options.strict === true &&
+            Object.hasOwnProperty.call(object, key)
+          ) {
+            error('Duplicate key "' + key + '"');
+          }
+
+          if (suspectProtoRx.test(key) === true) {
+            if (_options.protoAction === 'error') {
+              error('Object contains forbidden prototype property');
+            } else if (_options.protoAction === 'ignore') {
+              value();
+            } else {
+              object[key] = value();
+            }
+          } else if (suspectConstructorRx.test(key) === true) {
+            if (_options.constructorAction === 'error') {
+              error('Object contains forbidden constructor property');
+            } else if (_options.constructorAction === 'ignore') {
+              value();
+            } else {
+              object[key] = value();
+            }
+          } else {
+            object[key] = value();
+          }
+
+          white();
+          if (ch === '}') {
+            next('}');
+            return object;
+          }
+          next(',');
+          white();
+        }
+      }
+      error('Bad object');
     };
 
-// Return the json_parse function. It will have access to all of the above
-// functions and variables.
+  value = function () {
+    // Parse a JSON value. It could be an object, an array, a string, a number,
+    // or a word.
 
-    return function (source, reviver) {
-        var result;
+    white();
+    switch (ch) {
+      case '{':
+        return object();
+      case '[':
+        return array();
+      case '"':
+        return string();
+      case '-':
+        return number();
+      default:
+        return ch >= '0' && ch <= '9' ? number() : word();
+    }
+  };
 
-        text = source + '';
-        at = 0;
-        ch = ' ';
-        result = value();
-        white();
-        if (ch) {
-            error("Syntax error");
-        }
+  // Return the json_parse function. It will have access to all of the above
+  // functions and variables.
 
-// If there is a reviver function, we recursively walk the new structure,
-// passing each name/value pair to the reviver function for possible
-// transformation, starting with a temporary root object that holds the result
-// in an empty key. If there is not a reviver function, we simply return the
-// result.
+  return function (source, reviver) {
+    var result;
 
-        return typeof reviver === 'function'
-            ? (function walk(holder, key) {
-                var k, v, value = holder[key];
-                if (value && typeof value === 'object') {
-                    Object.keys(value).forEach(function(k) {
-                        v = walk(value, k);
-                        if (v !== undefined) {
-                            value[k] = v;
-                        } else {
-                            delete value[k];
-                        }
-                    });
-                }
-                return reviver.call(holder, key, value);
-            }({'': result}, ''))
-            : result;
-    };
-}
+    text = source + '';
+    at = 0;
+    ch = ' ';
+    result = value();
+    white();
+    if (ch) {
+      error('Syntax error');
+    }
+
+    // If there is a reviver function, we recursively walk the new structure,
+    // passing each name/value pair to the reviver function for possible
+    // transformation, starting with a temporary root object that holds the result
+    // in an empty key. If there is not a reviver function, we simply return the
+    // result.
+
+    return typeof reviver === 'function'
+      ? (function walk(holder, key) {
+          var k,
+            v,
+            value = holder[key];
+          if (value && typeof value === 'object') {
+            Object.keys(value).forEach(function (k) {
+              v = walk(value, k);
+              if (v !== undefined) {
+                value[k] = v;
+              } else {
+                delete value[k];
+              }
+            });
+          }
+          return reviver.call(holder, key, value);
+        })({ '': result }, '')
+      : result;
+  };
+};
 
 module.exports = json_parse;
 
@@ -18367,6 +18625,167 @@ module.exports = createHttpsProxyAgent;
 
 /***/ }),
 
+/***/ 345:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+var _a, _b, _c;
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.IdentityPoolClient = void 0;
+const fs = __webpack_require__(747);
+const util_1 = __webpack_require__(669);
+const baseexternalclient_1 = __webpack_require__(48);
+// fs.readfile is undefined in browser karma tests causing
+// `npm run browser-test` to fail as test.oauth2.ts imports this file via
+// src/index.ts.
+// Fallback to void function to avoid promisify throwing a TypeError.
+const readFile = util_1.promisify((_a = fs.readFile) !== null && _a !== void 0 ? _a : (() => { }));
+const realpath = util_1.promisify((_b = fs.realpath) !== null && _b !== void 0 ? _b : (() => { }));
+const lstat = util_1.promisify((_c = fs.lstat) !== null && _c !== void 0 ? _c : (() => { }));
+/**
+ * Defines the Url-sourced and file-sourced external account clients mainly
+ * used for K8s and Azure workloads.
+ */
+class IdentityPoolClient extends baseexternalclient_1.BaseExternalAccountClient {
+    /**
+     * Instantiate an IdentityPoolClient instance using the provided JSON
+     * object loaded from an external account credentials file.
+     * An error is thrown if the credential is not a valid file-sourced or
+     * url-sourced credential.
+     * @param options The external account options object typically loaded
+     *   from the external account JSON credential file.
+     * @param additionalOptions Optional additional behavior customization
+     *   options. These currently customize expiration threshold time and
+     *   whether to retry on 401/403 API request errors.
+     */
+    constructor(options, additionalOptions) {
+        var _a, _b;
+        super(options, additionalOptions);
+        this.file = options.credential_source.file;
+        this.url = options.credential_source.url;
+        this.headers = options.credential_source.headers;
+        if (!this.file && !this.url) {
+            throw new Error('No valid Identity Pool "credential_source" provided');
+        }
+        // Text is the default format type.
+        this.formatType = ((_a = options.credential_source.format) === null || _a === void 0 ? void 0 : _a.type) || 'text';
+        this.formatSubjectTokenFieldName = (_b = options.credential_source.format) === null || _b === void 0 ? void 0 : _b.subject_token_field_name;
+        if (this.formatType !== 'json' && this.formatType !== 'text') {
+            throw new Error(`Invalid credential_source format "${this.formatType}"`);
+        }
+        if (this.formatType === 'json' && !this.formatSubjectTokenFieldName) {
+            throw new Error('Missing subject_token_field_name for JSON credential_source format');
+        }
+    }
+    /**
+     * Triggered when a external subject token is needed to be exchanged for a GCP
+     * access token via GCP STS endpoint.
+     * This uses the `options.credential_source` object to figure out how
+     * to retrieve the token using the current environment. In this case,
+     * this either retrieves the local credential from a file location (k8s
+     * workload) or by sending a GET request to a local metadata server (Azure
+     * workloads).
+     * @return A promise that resolves with the external subject token.
+     */
+    async retrieveSubjectToken() {
+        if (this.file) {
+            return await this.getTokenFromFile(this.file, this.formatType, this.formatSubjectTokenFieldName);
+        }
+        return await this.getTokenFromUrl(this.url, this.formatType, this.formatSubjectTokenFieldName, this.headers);
+    }
+    /**
+     * Looks up the external subject token in the file path provided and
+     * resolves with that token.
+     * @param file The file path where the external credential is located.
+     * @param formatType The token file or URL response type (JSON or text).
+     * @param formatSubjectTokenFieldName For JSON response types, this is the
+     *   subject_token field name. For Azure, this is access_token. For text
+     *   response types, this is ignored.
+     * @return A promise that resolves with the external subject token.
+     */
+    async getTokenFromFile(filePath, formatType, formatSubjectTokenFieldName) {
+        // Make sure there is a file at the path. lstatSync will throw if there is
+        // nothing there.
+        try {
+            // Resolve path to actual file in case of symlink. Expect a thrown error
+            // if not resolvable.
+            filePath = await realpath(filePath);
+            if (!(await lstat(filePath)).isFile()) {
+                throw new Error();
+            }
+        }
+        catch (err) {
+            err.message = `The file at ${filePath} does not exist, or it is not a file. ${err.message}`;
+            throw err;
+        }
+        let subjectToken;
+        const rawText = await readFile(filePath, { encoding: 'utf8' });
+        if (formatType === 'text') {
+            subjectToken = rawText;
+        }
+        else if (formatType === 'json' && formatSubjectTokenFieldName) {
+            const json = JSON.parse(rawText);
+            subjectToken = json[formatSubjectTokenFieldName];
+        }
+        if (!subjectToken) {
+            throw new Error('Unable to parse the subject_token from the credential_source file');
+        }
+        return subjectToken;
+    }
+    /**
+     * Sends a GET request to the URL provided and resolves with the returned
+     * external subject token.
+     * @param url The URL to call to retrieve the subject token. This is typically
+     *   a local metadata server.
+     * @param formatType The token file or URL response type (JSON or text).
+     * @param formatSubjectTokenFieldName For JSON response types, this is the
+     *   subject_token field name. For Azure, this is access_token. For text
+     *   response types, this is ignored.
+     * @param headers The optional additional headers to send with the request to
+     *   the metadata server url.
+     * @return A promise that resolves with the external subject token.
+     */
+    async getTokenFromUrl(url, formatType, formatSubjectTokenFieldName, headers) {
+        const opts = {
+            url,
+            method: 'GET',
+            headers,
+            responseType: formatType,
+        };
+        let subjectToken;
+        if (formatType === 'text') {
+            const response = await this.transporter.request(opts);
+            subjectToken = response.data;
+        }
+        else if (formatType === 'json' && formatSubjectTokenFieldName) {
+            const response = await this.transporter.request(opts);
+            subjectToken = response.data[formatSubjectTokenFieldName];
+        }
+        if (!subjectToken) {
+            throw new Error('Unable to parse the subject_token from the credential_source URL');
+        }
+        return subjectToken;
+    }
+}
+exports.IdentityPoolClient = IdentityPoolClient;
+//# sourceMappingURL=identitypoolclient.js.map
+
+/***/ }),
+
 /***/ 346:
 /***/ (function(__unusedmodule, exports, __webpack_require__) {
 
@@ -18386,9 +18805,9 @@ module.exports = createHttpsProxyAgent;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.JWTAccess = void 0;
 const jws = __webpack_require__(979);
 const LRU = __webpack_require__(702);
-const messages = __webpack_require__(352);
 const DEFAULT_HEADER = {
     alg: 'RS256',
     typ: 'JWT',
@@ -18404,35 +18823,15 @@ class JWTAccess {
      * @param key the private key that will be used to sign the token.
      * @param keyId the ID of the private key used to sign the token.
      */
-    constructor(email, key, keyId) {
-        this.cache = new LRU({ max: 500, maxAge: 60 * 60 * 1000 });
+    constructor(email, key, keyId, eagerRefreshThresholdMillis) {
+        this.cache = new LRU({
+            max: 500,
+            maxAge: 60 * 60 * 1000,
+        });
         this.email = email;
         this.key = key;
         this.keyId = keyId;
-    }
-    /**
-     * Indicates whether the credential requires scopes to be created by calling
-     * createdScoped before use.
-     * @deprecated
-     * @return always false
-     */
-    createScopedRequired() {
-        // JWT Header authentication does not use scopes.
-        messages.warn(messages.JWT_ACCESS_CREATE_SCOPED_DEPRECATED);
-        return false;
-    }
-    /**
-     * Get a non-expired access token, after refreshing if necessary.
-     *
-     * @param authURI The URI being authorized.
-     * @param additionalClaims An object with a set of additional claims to
-     * include in the payload.
-     * @deprecated Please use `getRequestHeaders` instead.
-     * @returns An object that includes the authorization header.
-     */
-    getRequestMetadata(url, additionalClaims) {
-        messages.warn(messages.JWT_ACCESS_GET_REQUEST_METADATA_DEPRECATED);
-        return { headers: this.getRequestHeaders(url, additionalClaims) };
+        this.eagerRefreshThresholdMillis = eagerRefreshThresholdMillis !== null && eagerRefreshThresholdMillis !== void 0 ? eagerRefreshThresholdMillis : 5 * 60 * 1000;
     }
     /**
      * Get a non-expired access token, after refreshing if necessary.
@@ -18443,12 +18842,16 @@ class JWTAccess {
      * @returns An object that includes the authorization header.
      */
     getRequestHeaders(url, additionalClaims) {
+        // Return cached authorization headers, unless we are within
+        // eagerRefreshThresholdMillis ms of them expiring:
         const cachedToken = this.cache.get(url);
-        if (cachedToken) {
-            return cachedToken;
+        const now = Date.now();
+        if (cachedToken &&
+            cachedToken.expiration - now > this.eagerRefreshThresholdMillis) {
+            return cachedToken.headers;
         }
-        const iat = Math.floor(new Date().getTime() / 1000);
-        const exp = iat + 3600; // 3600 seconds = 1 hour
+        const iat = Math.floor(Date.now() / 1000);
+        const exp = JWTAccess.getExpirationTime(iat);
         // The payload used for signed JWT headers has:
         // iss == sub == <client email>
         // aud == <the authorization uri>
@@ -18469,13 +18872,27 @@ class JWTAccess {
             }
         }
         const header = this.keyId
-            ? Object.assign(Object.assign({}, DEFAULT_HEADER), { kid: this.keyId }) : DEFAULT_HEADER;
+            ? { ...DEFAULT_HEADER, kid: this.keyId }
+            : DEFAULT_HEADER;
         const payload = Object.assign(defaultClaims, additionalClaims);
         // Sign the jwt and add it to the cache
         const signedJWT = jws.sign({ header, payload, secret: this.key });
         const headers = { Authorization: `Bearer ${signedJWT}` };
-        this.cache.set(url, headers);
+        this.cache.set(url, {
+            expiration: exp * 1000,
+            headers,
+        });
         return headers;
+    }
+    /**
+     * Returns an expiration time for the JWT token.
+     *
+     * @param iat The issued at time for the JWT.
+     * @returns An expiration time for the JWT.
+     */
+    static getExpirationTime(iat) {
+        const exp = iat + 3600; // 3600 seconds = 1 hour
+        return exp;
     }
     /**
      * Create a JWTAccess credentials instance using the given input options.
@@ -18499,7 +18916,7 @@ class JWTAccess {
     }
     fromStream(inputStream, callback) {
         if (callback) {
-            this.fromStreamAsync(inputStream).then(r => callback(), callback);
+            this.fromStreamAsync(inputStream).then(() => callback(), callback);
         }
         else {
             return this.fromStreamAsync(inputStream);
@@ -19804,132 +20221,6 @@ BigInteger.prototype.isProbablePrime = bnIsProbablePrime;
 
 /***/ }),
 
-/***/ 352:
-/***/ (function(__unusedmodule, exports) {
-
-"use strict";
-
-// Copyright 2018 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-Object.defineProperty(exports, "__esModule", { value: true });
-var WarningTypes;
-(function (WarningTypes) {
-    WarningTypes["WARNING"] = "Warning";
-    WarningTypes["DEPRECATION"] = "DeprecationWarning";
-})(WarningTypes = exports.WarningTypes || (exports.WarningTypes = {}));
-function warn(warning) {
-    // Only show a given warning once
-    if (warning.warned) {
-        return;
-    }
-    warning.warned = true;
-    if (typeof process !== 'undefined' && process.emitWarning) {
-        // @types/node doesn't recognize the emitWarning syntax which
-        // accepts a config object, so `as any` it is
-        // https://nodejs.org/docs/latest-v8.x/api/process.html#process_process_emitwarning_warning_options
-        // tslint:disable-next-line no-any
-        process.emitWarning(warning.message, warning);
-    }
-    else {
-        console.warn(warning.message);
-    }
-}
-exports.warn = warn;
-exports.PROBLEMATIC_CREDENTIALS_WARNING = {
-    code: 'google-auth-library:00001',
-    type: WarningTypes.WARNING,
-    message: [
-        'Your application has authenticated using end user credentials from Google',
-        'Cloud SDK. We recommend that most server applications use service accounts',
-        'instead. If your application continues to use end user credentials from',
-        'Cloud SDK, you might receive a "quota exceeded" or "API not enabled" error.',
-        'For more information about service accounts, see',
-        'https://cloud.google.com/docs/authentication/.',
-    ].join(' '),
-};
-exports.DEFAULT_PROJECT_ID_DEPRECATED = {
-    code: 'google-auth-library:DEP002',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `getDefaultProjectId` method has been deprecated, and will be removed',
-        'in the 3.0 release of google-auth-library. Please use the `getProjectId`',
-        'method instead.',
-    ].join(' '),
-};
-exports.COMPUTE_CREATE_SCOPED_DEPRECATED = {
-    code: 'google-auth-library:DEP003',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `createScopedRequired` method on the `Compute` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library.',
-    ].join(' '),
-};
-exports.JWT_CREATE_SCOPED_DEPRECATED = {
-    code: 'google-auth-library:DEP004',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `createScopedRequired` method on the `JWT` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library.',
-    ].join(' '),
-};
-exports.IAM_CREATE_SCOPED_DEPRECATED = {
-    code: 'google-auth-library:DEP005',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `createScopedRequired` method on the `IAM` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library.',
-    ].join(' '),
-};
-exports.JWT_ACCESS_CREATE_SCOPED_DEPRECATED = {
-    code: 'google-auth-library:DEP006',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `createScopedRequired` method on the `JWTAccess` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library.',
-    ].join(' '),
-};
-exports.OAUTH_GET_REQUEST_METADATA_DEPRECATED = {
-    code: 'google-auth-library:DEP004',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `getRequestMetadata` method on the `OAuth2` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library. Please use',
-        'the `getRequestHeaders` method instead.',
-    ].join(' '),
-};
-exports.IAM_GET_REQUEST_METADATA_DEPRECATED = {
-    code: 'google-auth-library:DEP005',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `getRequestMetadata` method on the `IAM` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library. Please use',
-        'the `getRequestHeaders` method instead.',
-    ].join(' '),
-};
-exports.JWT_ACCESS_GET_REQUEST_METADATA_DEPRECATED = {
-    code: 'google-auth-library:DEP006',
-    type: WarningTypes.DEPRECATION,
-    message: [
-        'The `getRequestMetadata` method on the `JWTAccess` class has been deprecated,',
-        'and will be removed in the 3.0 release of google-auth-library. Please use',
-        'the `getRequestHeaders` method instead.',
-    ].join(' '),
-};
-//# sourceMappingURL=messages.js.map
-
-/***/ }),
-
 /***/ 357:
 /***/ (function(module) {
 
@@ -20096,16 +20387,20 @@ module.exports = function extend() {
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+/* global window */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.BrowserCrypto = void 0;
 // This file implements crypto functions we need using in-browser
 // SubtleCrypto interface `window.crypto.subtle`.
 const base64js = __webpack_require__(397);
 // Not all browsers support `TextEncoder`. The following `require` will
 // provide a fast UTF8-only replacement for those browsers that don't support
 // text encoding natively.
+// eslint-disable-next-line node/no-unsupported-features/node-builtins
 if (typeof process === 'undefined' && typeof TextEncoder === 'undefined') {
     __webpack_require__(671);
 }
+const crypto_1 = __webpack_require__(984);
 class BrowserCrypto {
     constructor() {
         if (typeof window === 'undefined' ||
@@ -20119,6 +20414,7 @@ class BrowserCrypto {
         // this method async as well.
         // To calculate SHA256 digest using SubtleCrypto, we first
         // need to convert an input string to an ArrayBuffer:
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
         const inputBuffer = new TextEncoder().encode(str);
         // Result is ArrayBuffer as well.
         const outputBuffer = await window.crypto.subtle.digest('SHA-256', inputBuffer);
@@ -20141,6 +20437,7 @@ class BrowserCrypto {
             name: 'RSASSA-PKCS1-v1_5',
             hash: { name: 'SHA-256' },
         };
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
         const dataArray = new TextEncoder().encode(data);
         const signatureArray = base64js.toByteArray(BrowserCrypto.padBase64(signature));
         const cryptoKey = await window.crypto.subtle.importKey('jwk', pubkey, algo, true, ['verify']);
@@ -20154,6 +20451,7 @@ class BrowserCrypto {
             name: 'RSASSA-PKCS1-v1_5',
             hash: { name: 'SHA-256' },
         };
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
         const dataArray = new TextEncoder().encode(data);
         const cryptoKey = await window.crypto.subtle.importKey('jwk', privateKey, algo, true, ['sign']);
         // SubtleCrypto's sign method is async so we must make
@@ -20163,13 +20461,55 @@ class BrowserCrypto {
     }
     decodeBase64StringUtf8(base64) {
         const uint8array = base64js.toByteArray(BrowserCrypto.padBase64(base64));
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
         const result = new TextDecoder().decode(uint8array);
         return result;
     }
     encodeBase64StringUtf8(text) {
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
         const uint8array = new TextEncoder().encode(text);
         const result = base64js.fromByteArray(uint8array);
         return result;
+    }
+    /**
+     * Computes the SHA-256 hash of the provided string.
+     * @param str The plain text string to hash.
+     * @return A promise that resolves with the SHA-256 hash of the provided
+     *   string in hexadecimal encoding.
+     */
+    async sha256DigestHex(str) {
+        // SubtleCrypto digest() method is async, so we must make
+        // this method async as well.
+        // To calculate SHA256 digest using SubtleCrypto, we first
+        // need to convert an input string to an ArrayBuffer:
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
+        const inputBuffer = new TextEncoder().encode(str);
+        // Result is ArrayBuffer as well.
+        const outputBuffer = await window.crypto.subtle.digest('SHA-256', inputBuffer);
+        return crypto_1.fromArrayBufferToHex(outputBuffer);
+    }
+    /**
+     * Computes the HMAC hash of a message using the provided crypto key and the
+     * SHA-256 algorithm.
+     * @param key The secret crypto key in utf-8 or ArrayBuffer format.
+     * @param msg The plain text message.
+     * @return A promise that resolves with the HMAC-SHA256 hash in ArrayBuffer
+     *   format.
+     */
+    async signWithHmacSha256(key, msg) {
+        // Convert key, if provided in ArrayBuffer format, to string.
+        const rawKey = typeof key === 'string'
+            ? key
+            : String.fromCharCode(...new Uint16Array(key));
+        // eslint-disable-next-line node/no-unsupported-features/node-builtins
+        const enc = new TextEncoder();
+        const cryptoKey = await window.crypto.subtle.importKey('raw', enc.encode(rawKey), {
+            name: 'HMAC',
+            hash: {
+                name: 'SHA-256',
+            },
+        }, false, ['sign']);
+        return window.crypto.subtle.sign('HMAC', cryptoKey, enc.encode(msg));
     }
 }
 exports.BrowserCrypto = BrowserCrypto;
@@ -20613,13 +20953,11 @@ forge.rc2.createDecryptionCipher = function(key, bits) {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.NodeCrypto = void 0;
 const crypto = __webpack_require__(417);
 class NodeCrypto {
     async sha256DigestBase64(str) {
-        return crypto
-            .createHash('sha256')
-            .update(str)
-            .digest('base64');
+        return crypto.createHash('sha256').update(str).digest('base64');
     }
     randomBytesBase64(count) {
         return crypto.randomBytes(count).toString('base64');
@@ -20642,8 +20980,46 @@ class NodeCrypto {
     encodeBase64StringUtf8(text) {
         return Buffer.from(text, 'utf-8').toString('base64');
     }
+    /**
+     * Computes the SHA-256 hash of the provided string.
+     * @param str The plain text string to hash.
+     * @return A promise that resolves with the SHA-256 hash of the provided
+     *   string in hexadecimal encoding.
+     */
+    async sha256DigestHex(str) {
+        return crypto.createHash('sha256').update(str).digest('hex');
+    }
+    /**
+     * Computes the HMAC hash of a message using the provided crypto key and the
+     * SHA-256 algorithm.
+     * @param key The secret crypto key in utf-8 or ArrayBuffer format.
+     * @param msg The plain text message.
+     * @return A promise that resolves with the HMAC-SHA256 hash in ArrayBuffer
+     *   format.
+     */
+    async signWithHmacSha256(key, msg) {
+        const cryptoKey = typeof key === 'string' ? key : toBuffer(key);
+        return toArrayBuffer(crypto.createHmac('sha256', cryptoKey).update(msg).digest());
+    }
 }
 exports.NodeCrypto = NodeCrypto;
+/**
+ * Converts a Node.js Buffer to an ArrayBuffer.
+ * https://stackoverflow.com/questions/8609289/convert-a-binary-nodejs-buffer-to-javascript-arraybuffer
+ * @param buffer The Buffer input to covert.
+ * @return The ArrayBuffer representation of the input.
+ */
+function toArrayBuffer(buffer) {
+    return buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+}
+/**
+ * Converts an ArrayBuffer to a Node.js Buffer.
+ * @param arrayBuffer The ArrayBuffer input to covert.
+ * @return The Buffer representation of the input.
+ */
+function toBuffer(arrayBuffer) {
+    return Buffer.from(arrayBuffer);
+}
 //# sourceMappingURL=crypto.js.map
 
 /***/ }),
@@ -20795,9 +21171,7 @@ function fromByteArray (uint8) {
 
   // go through the array every three bytes, we'll deal with trailing stuff later
   for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
-    parts.push(encodeChunk(
-      uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)
-    ))
+    parts.push(encodeChunk(uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)))
   }
 
   // pad the end with zeros, but make sure to not forget the extra bytes
@@ -20836,10 +21210,11 @@ function fromByteArray (uint8) {
  * See file LICENSE for detail or copy at https://opensource.org/licenses/MIT
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GoogleToken = void 0;
 const fs = __webpack_require__(747);
 const gaxios_1 = __webpack_require__(597);
 const jws = __webpack_require__(979);
-const mime = __webpack_require__(444);
+const path = __webpack_require__(622);
 const util_1 = __webpack_require__(669);
 const readFile = fs.readFile
     ? util_1.promisify(fs.readFile)
@@ -20891,6 +21266,22 @@ class GoogleToken {
             return true;
         }
     }
+    /**
+     * Returns whether the token will expire within eagerRefreshThresholdMillis
+     *
+     * @return true if the token will be expired within eagerRefreshThresholdMillis, false otherwise.
+     */
+    isTokenExpiring() {
+        var _a;
+        const now = new Date().getTime();
+        const eagerRefreshThresholdMillis = (_a = this.eagerRefreshThresholdMillis) !== null && _a !== void 0 ? _a : 0;
+        if (this.rawToken && this.expiresAt) {
+            return this.expiresAt <= now + eagerRefreshThresholdMillis;
+        }
+        else {
+            return true;
+        }
+    }
     getToken(callback, opts = {}) {
         if (typeof callback === 'object') {
             opts = callback;
@@ -20912,10 +21303,9 @@ class GoogleToken {
      * @returns an object with privateKey and clientEmail properties
      */
     async getCredentials(keyFile) {
-        const mimeType = mime.getType(keyFile);
-        switch (mimeType) {
-            case 'application/json': {
-                // *.json file
+        const ext = path.extname(keyFile);
+        switch (ext) {
+            case '.json': {
                 const key = await readFile(keyFile, 'utf8');
                 const body = JSON.parse(key);
                 const privateKey = body.private_key;
@@ -20925,13 +21315,14 @@ class GoogleToken {
                 }
                 return { privateKey, clientEmail };
             }
-            case 'application/x-x509-ca-cert': {
-                // *.pem file
+            case '.der':
+            case '.crt':
+            case '.pem': {
                 const privateKey = await readFile(keyFile, 'utf8');
                 return { privateKey };
             }
-            case 'application/x-pkcs12': {
-                // *.p12 file
+            case '.p12':
+            case '.pfx': {
                 // NOTE:  The loading of `google-p12-pem` is deferred for performance
                 // reasons.  The `node-forge` npm module in `google-p12-pem` adds a fair
                 // bit time to overall module loading, and is likely not frequently
@@ -20948,7 +21339,18 @@ class GoogleToken {
         }
     }
     async getTokenAsync(opts) {
-        if (this.hasExpired() === false && opts.forceRefresh === false) {
+        if (this.inFlightRequest && !opts.forceRefresh) {
+            return this.inFlightRequest;
+        }
+        try {
+            return await (this.inFlightRequest = this.getTokenAsyncInner(opts));
+        }
+        finally {
+            this.inFlightRequest = undefined;
+        }
+    }
+    async getTokenAsyncInner(opts) {
+        if (this.isTokenExpiring() === false && opts.forceRefresh === false) {
             return Promise.resolve(this.rawToken);
         }
         if (!this.key && !this.keyFile) {
@@ -21008,6 +21410,7 @@ class GoogleToken {
         else {
             this.scope = options.scope;
         }
+        this.eagerRefreshThresholdMillis = options.eagerRefreshThresholdMillis;
     }
     /**
      * Request the token from Google.
@@ -21086,10 +21489,10 @@ module.exports = require("crypto");
   'use strict';
 
 /*
- *      bignumber.js v7.2.1
+ *      bignumber.js v9.0.1
  *      A JavaScript library for arbitrary-precision arithmetic.
  *      https://github.com/MikeMcl/bignumber.js
- *      Copyright (c) 2018 Michael Mclaughlin <M8ch88l@gmail.com>
+ *      Copyright (c) 2020 Michael Mclaughlin <M8ch88l@gmail.com>
  *      MIT Licensed.
  *
  *      BigNumber.prototype methods     |  BigNumber methods
@@ -21109,7 +21512,7 @@ module.exports = require("crypto");
  *      isLessThan               lt     |  maximum              max
  *      isLessThanOrEqualTo      lte    |  minimum              min
  *      isNaN                           |  random
- *      isNegative                      |
+ *      isNegative                      |  sum
  *      isPositive                      |
  *      isZero                          |
  *      minus                           |
@@ -21135,7 +21538,6 @@ module.exports = require("crypto");
 
   var BigNumber,
     isNumeric = /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i,
-
     mathceil = Math.ceil,
     mathfloor = Math.floor,
 
@@ -21234,16 +21636,18 @@ module.exports = require("crypto");
 
       // The format specification used by the BigNumber.prototype.toFormat method.
       FORMAT = {
-        decimalSeparator: '.',
-        groupSeparator: ',',
+        prefix: '',
         groupSize: 3,
         secondaryGroupSize: 0,
+        groupSeparator: ',',
+        decimalSeparator: '.',
+        fractionGroupSize: 0,
         fractionGroupSeparator: '\xA0',      // non-breaking space
-        fractionGroupSize: 0
+        suffix: ''
       },
 
-      // The alphabet used for base conversion.
-      // It must be at least 2 characters long, with no '.' or repeated character.
+      // The alphabet used for base conversion. It must be at least 2 characters long, with no '+',
+      // '-', '.', whitespace, or repeated character.
       // '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ$_'
       ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 
@@ -21258,50 +21662,57 @@ module.exports = require("crypto");
      * The BigNumber constructor and exported function.
      * Create and return a new instance of a BigNumber object.
      *
-     * n {number|string|BigNumber} A numeric value.
-     * [b] {number} The base of n. Integer, 2 to ALPHABET.length inclusive.
+     * v {number|string|BigNumber} A numeric value.
+     * [b] {number} The base of v. Integer, 2 to ALPHABET.length inclusive.
      */
-    function BigNumber(n, b) {
+    function BigNumber(v, b) {
       var alphabet, c, caseChanged, e, i, isNum, len, str,
         x = this;
 
-      // Enable constructor usage without new.
-      if (!(x instanceof BigNumber)) {
-
-        // Don't throw on constructor call without new (#81).
-        // '[BigNumber Error] Constructor call without new: {n}'
-        //throw Error(bignumberError + ' Constructor call without new: ' + n);
-        return new BigNumber(n, b);
-      }
+      // Enable constructor call without `new`.
+      if (!(x instanceof BigNumber)) return new BigNumber(v, b);
 
       if (b == null) {
 
-        // Duplicate.
-        if (n instanceof BigNumber) {
-          x.s = n.s;
-          x.e = n.e;
-          x.c = (n = n.c) ? n.slice() : n;
+        if (v && v._isBigNumber === true) {
+          x.s = v.s;
+
+          if (!v.c || v.e > MAX_EXP) {
+            x.c = x.e = null;
+          } else if (v.e < MIN_EXP) {
+            x.c = [x.e = 0];
+          } else {
+            x.e = v.e;
+            x.c = v.c.slice();
+          }
+
           return;
         }
 
-        isNum = typeof n == 'number';
-
-        if (isNum && n * 0 == 0) {
+        if ((isNum = typeof v == 'number') && v * 0 == 0) {
 
           // Use `1 / n` to handle minus zero also.
-          x.s = 1 / n < 0 ? (n = -n, -1) : 1;
+          x.s = 1 / v < 0 ? (v = -v, -1) : 1;
 
-          // Faster path for integers.
-          if (n === ~~n) {
-            for (e = 0, i = n; i >= 10; i /= 10, e++);
-            x.e = e;
-            x.c = [n];
+          // Fast path for integers, where n < 2147483648 (2**31).
+          if (v === ~~v) {
+            for (e = 0, i = v; i >= 10; i /= 10, e++);
+
+            if (e > MAX_EXP) {
+              x.c = x.e = null;
+            } else {
+              x.e = e;
+              x.c = [v];
+            }
+
             return;
           }
 
-          str = n + '';
+          str = String(v);
         } else {
-          if (!isNumeric.test(str = n + '')) return parseNumeric(x, str, isNum);
+
+          if (!isNumeric.test(str = String(v))) return parseNumeric(x, str, isNum);
+
           x.s = str.charCodeAt(0) == 45 ? (str = str.slice(1), -1) : 1;
         }
 
@@ -21325,32 +21736,28 @@ module.exports = require("crypto");
 
         // '[BigNumber Error] Base {not a primitive number|not an integer|out of range}: {b}'
         intCheck(b, 2, ALPHABET.length, 'Base');
-        str = n + '';
 
         // Allow exponential notation to be used with base 10 argument, while
         // also rounding to DECIMAL_PLACES as with other bases.
         if (b == 10) {
-          x = new BigNumber(n instanceof BigNumber ? n : str);
+          x = new BigNumber(v);
           return round(x, DECIMAL_PLACES + x.e + 1, ROUNDING_MODE);
         }
 
-        isNum = typeof n == 'number';
+        str = String(v);
 
-        if (isNum) {
+        if (isNum = typeof v == 'number') {
 
           // Avoid potential interpretation of Infinity and NaN as base 44+ values.
-          if (n * 0 != 0) return parseNumeric(x, str, isNum, b);
+          if (v * 0 != 0) return parseNumeric(x, str, isNum, b);
 
-          x.s = 1 / n < 0 ? (str = str.slice(1), -1) : 1;
+          x.s = 1 / v < 0 ? (str = str.slice(1), -1) : 1;
 
           // '[BigNumber Error] Number primitive has more than 15 significant digits: {n}'
           if (BigNumber.DEBUG && str.replace(/^0\.0*|\./, '').length > 15) {
             throw Error
-             (tooManyDigits + n);
+             (tooManyDigits + v);
           }
-
-          // Prevent later check for length on converted number.
-          isNum = false;
         } else {
           x.s = str.charCodeAt(0) === 45 ? (str = str.slice(1), -1) : 1;
         }
@@ -21359,7 +21766,7 @@ module.exports = require("crypto");
         e = i = 0;
 
         // Check that str is a valid base b number.
-        // Don't use RegExp so alphabet can contain special characters.
+        // Don't use RegExp, so alphabet can contain special characters.
         for (len = str.length; i < len; i++) {
           if (alphabet.indexOf(c = str.charAt(i)) < 0) {
             if (c == '.') {
@@ -21381,10 +21788,12 @@ module.exports = require("crypto");
               }
             }
 
-            return parseNumeric(x, n + '', isNum, b);
+            return parseNumeric(x, String(v), isNum, b);
           }
         }
 
+        // Prevent later check for length on converted number.
+        isNum = false;
         str = convertBase(str, b, 10, x.s);
 
         // Decimal point?
@@ -21398,22 +21807,18 @@ module.exports = require("crypto");
       // Determine trailing zeros.
       for (len = str.length; str.charCodeAt(--len) === 48;);
 
-      str = str.slice(i, ++len);
-
-      if (str) {
+      if (str = str.slice(i, ++len)) {
         len -= i;
 
         // '[BigNumber Error] Number primitive has more than 15 significant digits: {n}'
         if (isNum && BigNumber.DEBUG &&
-          len > 15 && (n > MAX_SAFE_INTEGER || n !== mathfloor(n))) {
+          len > 15 && (v > MAX_SAFE_INTEGER || v !== mathfloor(v))) {
             throw Error
-             (tooManyDigits + (x.s * n));
+             (tooManyDigits + (x.s * v));
         }
 
-        e = e - i - 1;
-
          // Overflow?
-        if (e > MAX_EXP) {
+        if ((e = e - i - 1) > MAX_EXP) {
 
           // Infinity.
           x.c = x.e = null;
@@ -21432,7 +21837,7 @@ module.exports = require("crypto");
           // e is the base 10 exponent.
           // i is where to slice str to get the first element of the coefficient array.
           i = (e + 1) % LOG_BASE;
-          if (e < 0) i += LOG_BASE;
+          if (e < 0) i += LOG_BASE;  // i < 1
 
           if (i < len) {
             if (i) x.c.push(+str.slice(0, i));
@@ -21441,8 +21846,7 @@ module.exports = require("crypto");
               x.c.push(+str.slice(i, i += LOG_BASE));
             }
 
-            str = str.slice(i);
-            i = LOG_BASE - str.length;
+            i = LOG_BASE - (str = str.slice(i)).length;
           } else {
             i -= len;
           }
@@ -21491,12 +21895,14 @@ module.exports = require("crypto");
      *   ALPHABET         {string}           A string of two or more unique characters which does
      *                                       not contain '.'.
      *   FORMAT           {object}           An object with some of the following properties:
-     *      decimalSeparator       {string}
-     *      groupSeparator         {string}
-     *      groupSize              {number}
-     *      secondaryGroupSize     {number}
-     *      fractionGroupSeparator {string}
-     *      fractionGroupSize      {number}
+     *     prefix                 {string}
+     *     groupSize              {number}
+     *     secondaryGroupSize     {number}
+     *     groupSeparator         {string}
+     *     decimalSeparator       {string}
+     *     fractionGroupSize      {number}
+     *     fractionGroupSeparator {string}
+     *     suffix                 {string}
      *
      * (The values assigned to the above FORMAT object properties are not checked for validity.)
      *
@@ -21536,7 +21942,7 @@ module.exports = require("crypto");
           // '[BigNumber Error] EXPONENTIAL_AT {not a primitive number|not an integer|out of range}: {v}'
           if (obj.hasOwnProperty(p = 'EXPONENTIAL_AT')) {
             v = obj[p];
-            if (isArray(v)) {
+            if (v && v.pop) {
               intCheck(v[0], -MAX, 0, p);
               intCheck(v[1], 0, MAX, p);
               TO_EXP_NEG = v[0];
@@ -21552,7 +21958,7 @@ module.exports = require("crypto");
           // '[BigNumber Error] RANGE {not a primitive number|not an integer|out of range|cannot be zero}: {v}'
           if (obj.hasOwnProperty(p = 'RANGE')) {
             v = obj[p];
-            if (isArray(v)) {
+            if (v && v.pop) {
               intCheck(v[0], -MAX, -1, p);
               intCheck(v[1], 1, MAX, p);
               MIN_EXP = v[0];
@@ -21622,8 +22028,9 @@ module.exports = require("crypto");
           if (obj.hasOwnProperty(p = 'ALPHABET')) {
             v = obj[p];
 
-            // Disallow if only one character, or contains '.' or a repeated character.
-            if (typeof v == 'string' && !/^.$|\.|(.).*\1/.test(v)) {
+            // Disallow if less than two characters,
+            // or if it contains '+', '-', '.', whitespace, or a repeated character.
+            if (typeof v == 'string' && !/^.?$|[+\-.\s]|(.).*\1/.test(v)) {
               ALPHABET = v;
             } else {
               throw Error
@@ -21656,10 +22063,56 @@ module.exports = require("crypto");
     /*
      * Return true if v is a BigNumber instance, otherwise return false.
      *
+     * If BigNumber.DEBUG is true, throw if a BigNumber instance is not well-formed.
+     *
      * v {any}
+     *
+     * '[BigNumber Error] Invalid BigNumber: {v}'
      */
     BigNumber.isBigNumber = function (v) {
-      return v instanceof BigNumber || v && v._isBigNumber === true || false;
+      if (!v || v._isBigNumber !== true) return false;
+      if (!BigNumber.DEBUG) return true;
+
+      var i, n,
+        c = v.c,
+        e = v.e,
+        s = v.s;
+
+      out: if ({}.toString.call(c) == '[object Array]') {
+
+        if ((s === 1 || s === -1) && e >= -MAX && e <= MAX && e === mathfloor(e)) {
+
+          // If the first element is zero, the BigNumber value must be zero.
+          if (c[0] === 0) {
+            if (e === 0 && c.length === 1) return true;
+            break out;
+          }
+
+          // Calculate number of digits that c[0] should have, based on the exponent.
+          i = (e + 1) % LOG_BASE;
+          if (i < 1) i += LOG_BASE;
+
+          // Calculate number of digits of c[0].
+          //if (Math.ceil(Math.log(c[0] + 1) / Math.LN10) == i) {
+          if (String(c[0]).length == i) {
+
+            for (i = 0; i < c.length; i++) {
+              n = c[i];
+              if (n < 0 || n >= BASE || n !== mathfloor(n)) break out;
+            }
+
+            // Last element cannot be zero, unless it is the only element.
+            if (n !== 0) return true;
+          }
+        }
+
+      // Infinity/NaN
+      } else if (c === null && e === null && (s === null || s === 1 || s === -1)) {
+        return true;
+      }
+
+      throw Error
+        (bignumberError + 'Invalid BigNumber: ' + v);
     };
 
 
@@ -21827,6 +22280,20 @@ module.exports = require("crypto");
     })();
 
 
+    /*
+     * Return a BigNumber whose value is the sum of the arguments.
+     *
+     * arguments {number|string|BigNumber}
+     */
+    BigNumber.sum = function () {
+      var i = 1,
+        args = arguments,
+        sum = new BigNumber(args[0]);
+      for (; i < args.length;) sum = sum.plus(args[i++]);
+      return sum;
+    };
+
+
     // PRIVATE FUNCTIONS
 
 
@@ -21945,8 +22412,7 @@ module.exports = require("crypto");
         if (d < 1 || !xc[0]) {
 
           // 1^-dp or 0
-          str = r ? toFixedPoint(alphabet.charAt(1), -dp, alphabet.charAt(0))
-              : alphabet.charAt(0);
+          str = r ? toFixedPoint(alphabet.charAt(1), -dp, alphabet.charAt(0)) : alphabet.charAt(0);
         } else {
 
           // Truncate xc to the required number of decimal places.
@@ -22264,7 +22730,7 @@ module.exports = require("crypto");
 
       if (i == null) {
         str = coeffToString(n.c);
-        str = id == 1 || id == 2 && ne <= TO_EXP_NEG
+        str = id == 1 || id == 2 && (ne <= TO_EXP_NEG || ne >= TO_EXP_POS)
          ? toExponential(str, ne)
          : toFixedPoint(str, ne, '0');
       } else {
@@ -22311,13 +22777,11 @@ module.exports = require("crypto");
 
     // Handle BigNumber.max and BigNumber.min.
     function maxOrMin(args, method) {
-      var m, n,
-        i = 0;
+      var n,
+        i = 1,
+        m = new BigNumber(args[0]);
 
-      if (isArray(args[0])) args = args[0];
-      m = new BigNumber(args[0]);
-
-      for (; ++i < args.length;) {
+      for (; i < args.length; i++) {
         n = new BigNumber(args[i]);
 
         // If any number is NaN, return NaN.
@@ -22382,7 +22846,6 @@ module.exports = require("crypto");
         // No exception on ±Infinity or NaN.
         if (isInfinityOrNaN.test(s)) {
           x.s = isNaN(s) ? null : s < 0 ? -1 : 1;
-          x.c = x.e = null;
         } else {
           if (!isNum) {
 
@@ -22410,8 +22873,10 @@ module.exports = require("crypto");
           }
 
           // NaN
-          x.c = x.e = x.s = null;
+          x.s = null;
         }
+
+        x.c = x.e = null;
       }
     })();
 
@@ -22578,6 +23043,22 @@ module.exports = require("crypto");
     }
 
 
+    function valueOf(n) {
+      var str,
+        e = n.e;
+
+      if (e === null) return n.toString();
+
+      str = coeffToString(n.c);
+
+      str = e <= TO_EXP_NEG || e >= TO_EXP_POS
+        ? toExponential(str, e)
+        : toFixedPoint(str, e, '0');
+
+      return n.s < 0 ? '-' + str : str;
+    }
+
+
     // PROTOTYPE/INSTANCE METHODS
 
 
@@ -22689,7 +23170,7 @@ module.exports = require("crypto");
      * '[BigNumber Error] Exponent not an integer: {n}'
      */
     P.exponentiatedBy = P.pow = function (n, m) {
-      var half, isModExp, k, more, nIsBig, nIsNeg, nIsOdd, y,
+      var half, isModExp, i, k, more, nIsBig, nIsNeg, nIsOdd, y,
         x = this;
 
       n = new BigNumber(n);
@@ -22697,7 +23178,7 @@ module.exports = require("crypto");
       // Allow NaN and ±Infinity, but not other non-integers.
       if (n.c && !n.isInteger()) {
         throw Error
-          (bignumberError + 'Exponent not an integer: ' + n);
+          (bignumberError + 'Exponent not an integer: ' + valueOf(n));
       }
 
       if (m != null) m = new BigNumber(m);
@@ -22710,7 +23191,7 @@ module.exports = require("crypto");
 
         // The sign of the result of pow when x is negative depends on the evenness of n.
         // If +n overflows to ±Infinity, the evenness of n would be not be known.
-        y = new BigNumber(Math.pow(+x.valueOf(), nIsBig ? 2 - isOdd(n) : +n));
+        y = new BigNumber(Math.pow(+valueOf(x), nIsBig ? 2 - isOdd(n) : +valueOf(n)));
         return m ? y.mod(m) : y;
       }
 
@@ -22752,12 +23233,12 @@ module.exports = require("crypto");
 
       if (nIsBig) {
         half = new BigNumber(0.5);
+        if (nIsNeg) n.s = 1;
         nIsOdd = isOdd(n);
       } else {
-        nIsOdd = n % 2;
+        i = Math.abs(+valueOf(n));
+        nIsOdd = i % 2;
       }
-
-      if (nIsNeg) n.s = 1;
 
       y = new BigNumber(ONE);
 
@@ -22775,16 +23256,21 @@ module.exports = require("crypto");
           }
         }
 
-        if (nIsBig) {
+        if (i) {
+          i = mathfloor(i / 2);
+          if (i === 0) break;
+          nIsOdd = i % 2;
+        } else {
           n = n.times(half);
           round(n, n.e + 1, 1);
-          if (!n.c[0]) break;
-          nIsBig = n.e > 14;
-          nIsOdd = isOdd(n);
-        } else {
-          n = mathfloor(n / 2);
-          if (!n) break;
-          nIsOdd = n % 2;
+
+          if (n.e > 14) {
+            nIsOdd = isOdd(n);
+          } else {
+            i = +valueOf(n);
+            if (i === 0) break;
+            nIsOdd = i % 2;
+          }
         }
 
         x = x.times(x);
@@ -23386,18 +23872,18 @@ module.exports = require("crypto");
       }
 
       // Initial estimate.
-      s = Math.sqrt(+x);
+      s = Math.sqrt(+valueOf(x));
 
       // Math.sqrt underflow/overflow?
       // Pass x to Math.sqrt as integer, then adjust the exponent of the result.
       if (s == 0 || s == 1 / 0) {
         n = coeffToString(c);
         if ((n.length + e) % 2 == 0) n += '0';
-        s = Math.sqrt(n);
+        s = Math.sqrt(+n);
         e = bitFloor((e + 1) / 2) - (e < 0 || e % 2);
 
         if (s == 1 / 0) {
-          n = '1e' + e;
+          n = '5e' + e;
         } else {
           n = s.toExponential();
           n = n.slice(0, n.indexOf('e') + 1) + e;
@@ -23422,8 +23908,7 @@ module.exports = require("crypto");
           t = r;
           r = half.times(t.plus(div(x, t, dp, 1)));
 
-          if (coeffToString(t.c  ).slice(0, s) === (n =
-             coeffToString(r.c)).slice(0, s)) {
+          if (coeffToString(t.c).slice(0, s) === (n = coeffToString(r.c)).slice(0, s)) {
 
             // The exponent of r may here be one less than the final result exponent,
             // e.g 0.0009999 (e-4) --> 0.001 (e-3), so adjust s so the rounding digits
@@ -23513,34 +23998,58 @@ module.exports = require("crypto");
     /*
      * Return a string representing the value of this BigNumber in fixed-point notation rounded
      * using rm or ROUNDING_MODE to dp decimal places, and formatted according to the properties
-     * of the FORMAT object (see BigNumber.set).
+     * of the format or FORMAT object (see BigNumber.set).
+     *
+     * The formatting object may contain some or all of the properties shown below.
      *
      * FORMAT = {
-     *      decimalSeparator : '.',
-     *      groupSeparator : ',',
-     *      groupSize : 3,
-     *      secondaryGroupSize : 0,
-     *      fractionGroupSeparator : '\xA0',    // non-breaking space
-     *      fractionGroupSize : 0
+     *   prefix: '',
+     *   groupSize: 3,
+     *   secondaryGroupSize: 0,
+     *   groupSeparator: ',',
+     *   decimalSeparator: '.',
+     *   fractionGroupSize: 0,
+     *   fractionGroupSeparator: '\xA0',      // non-breaking space
+     *   suffix: ''
      * };
      *
      * [dp] {number} Decimal places. Integer, 0 to MAX inclusive.
      * [rm] {number} Rounding mode. Integer, 0 to 8 inclusive.
+     * [format] {object} Formatting options. See FORMAT pbject above.
      *
      * '[BigNumber Error] Argument {not a primitive number|not an integer|out of range}: {dp|rm}'
+     * '[BigNumber Error] Argument not an object: {format}'
      */
-    P.toFormat = function (dp, rm) {
-      var str = this.toFixed(dp, rm);
+    P.toFormat = function (dp, rm, format) {
+      var str,
+        x = this;
 
-      if (this.c) {
+      if (format == null) {
+        if (dp != null && rm && typeof rm == 'object') {
+          format = rm;
+          rm = null;
+        } else if (dp && typeof dp == 'object') {
+          format = dp;
+          dp = rm = null;
+        } else {
+          format = FORMAT;
+        }
+      } else if (typeof format != 'object') {
+        throw Error
+          (bignumberError + 'Argument not an object: ' + format);
+      }
+
+      str = x.toFixed(dp, rm);
+
+      if (x.c) {
         var i,
           arr = str.split('.'),
-          g1 = +FORMAT.groupSize,
-          g2 = +FORMAT.secondaryGroupSize,
-          groupSeparator = FORMAT.groupSeparator,
+          g1 = +format.groupSize,
+          g2 = +format.secondaryGroupSize,
+          groupSeparator = format.groupSeparator || '',
           intPart = arr[0],
           fractionPart = arr[1],
-          isNeg = this.s < 0,
+          isNeg = x.s < 0,
           intDigits = isNeg ? intPart.slice(1) : intPart,
           len = intDigits.length;
 
@@ -23549,40 +24058,36 @@ module.exports = require("crypto");
         if (g1 > 0 && len > 0) {
           i = len % g1 || g1;
           intPart = intDigits.substr(0, i);
-
-          for (; i < len; i += g1) {
-            intPart += groupSeparator + intDigits.substr(i, g1);
-          }
-
+          for (; i < len; i += g1) intPart += groupSeparator + intDigits.substr(i, g1);
           if (g2 > 0) intPart += groupSeparator + intDigits.slice(i);
           if (isNeg) intPart = '-' + intPart;
         }
 
         str = fractionPart
-         ? intPart + FORMAT.decimalSeparator + ((g2 = +FORMAT.fractionGroupSize)
+         ? intPart + (format.decimalSeparator || '') + ((g2 = +format.fractionGroupSize)
           ? fractionPart.replace(new RegExp('\\d{' + g2 + '}\\B', 'g'),
-           '$&' + FORMAT.fractionGroupSeparator)
+           '$&' + (format.fractionGroupSeparator || ''))
           : fractionPart)
          : intPart;
       }
 
-      return str;
+      return (format.prefix || '') + str + (format.suffix || '');
     };
 
 
     /*
-     * Return a string array representing the value of this BigNumber as a simple fraction with
-     * an integer numerator and an integer denominator. The denominator will be a positive
-     * non-zero value less than or equal to the specified maximum denominator. If a maximum
-     * denominator is not specified, the denominator will be the lowest value necessary to
-     * represent the number exactly.
+     * Return an array of two BigNumbers representing the value of this BigNumber as a simple
+     * fraction with an integer numerator and an integer denominator.
+     * The denominator will be a positive non-zero value less than or equal to the specified
+     * maximum denominator. If a maximum denominator is not specified, the denominator will be
+     * the lowest value necessary to represent the number exactly.
      *
      * [md] {number|string|BigNumber} Integer >= 1, or Infinity. The maximum denominator.
      *
      * '[BigNumber Error] Argument {not an integer|out of range} : {md}'
      */
     P.toFraction = function (md) {
-      var arr, d, d0, d1, d2, e, exp, n, n0, n1, q, s,
+      var d, d0, d1, d2, e, exp, n, n0, n1, q, r, s,
         x = this,
         xc = x.c;
 
@@ -23593,11 +24098,11 @@ module.exports = require("crypto");
         if (!n.isInteger() && (n.c || n.s !== 1) || n.lt(ONE)) {
           throw Error
             (bignumberError + 'Argument ' +
-              (n.isInteger() ? 'out of range: ' : 'not an integer: ') + md);
+              (n.isInteger() ? 'out of range: ' : 'not an integer: ') + valueOf(n));
         }
       }
 
-      if (!xc) return x.toString();
+      if (!xc) return new BigNumber(x);
 
       d = new BigNumber(ONE);
       n1 = d0 = new BigNumber(ONE);
@@ -23633,16 +24138,15 @@ module.exports = require("crypto");
       n0 = n0.plus(d2.times(n1));
       d0 = d0.plus(d2.times(d1));
       n0.s = n1.s = x.s;
-      e *= 2;
+      e = e * 2;
 
       // Determine which fraction is closer to x, n0/d0 or n1/d1
-      arr = div(n1, d1, e, ROUNDING_MODE).minus(x).abs().comparedTo(
-         div(n0, d0, e, ROUNDING_MODE).minus(x).abs()) < 1
-          ? [n1.toString(), d1.toString()]
-          : [n0.toString(), d0.toString()];
+      r = div(n1, d1, e, ROUNDING_MODE).minus(x).abs().comparedTo(
+          div(n0, d0, e, ROUNDING_MODE).minus(x).abs()) < 1 ? [n1, d1] : [n0, d0];
 
       MAX_EXP = exp;
-      return arr;
+
+      return r;
     };
 
 
@@ -23650,7 +24154,7 @@ module.exports = require("crypto");
      * Return the value of this BigNumber converted to a number primitive.
      */
     P.toNumber = function () {
-      return +this;
+      return +valueOf(this);
     };
 
 
@@ -23690,7 +24194,6 @@ module.exports = require("crypto");
 
       // Infinity or NaN?
       if (e === null) {
-
         if (s) {
           str = 'Infinity';
           if (s < 0) str = '-' + str;
@@ -23698,15 +24201,16 @@ module.exports = require("crypto");
           str = 'NaN';
         }
       } else {
-        str = coeffToString(n.c);
-
         if (b == null) {
           str = e <= TO_EXP_NEG || e >= TO_EXP_POS
-           ? toExponential(str, e)
-           : toFixedPoint(str, e, '0');
+           ? toExponential(coeffToString(n.c), e)
+           : toFixedPoint(coeffToString(n.c), e, '0');
+        } else if (b === 10) {
+          n = round(new BigNumber(n), DECIMAL_PLACES + e + 1, ROUNDING_MODE);
+          str = toFixedPoint(coeffToString(n.c), n.e, '0');
         } else {
           intCheck(b, 2, ALPHABET.length, 'Base');
-          str = convertBase(toFixedPoint(str, e, '0'), 10, b, s, true);
+          str = convertBase(toFixedPoint(coeffToString(n.c), e, '0'), 10, b, s, true);
         }
 
         if (s < 0 && n.c[0]) str = '-' + str;
@@ -23721,19 +24225,7 @@ module.exports = require("crypto");
      * negative zero.
      */
     P.valueOf = P.toJSON = function () {
-      var str,
-        n = this,
-        e = n.e;
-
-      if (e === null) return n.toString();
-
-      str = coeffToString(n.c);
-
-      str = e <= TO_EXP_NEG || e >= TO_EXP_POS
-        ? toExponential(str, e)
-        : toFixedPoint(str, e, '0');
-
-      return n.s < 0 ? '-' + str : str;
+      return valueOf(this);
     };
 
 
@@ -23746,6 +24238,9 @@ module.exports = require("crypto");
 
 
   // PRIVATE HELPER FUNCTIONS
+
+  // These functions don't need access to variables,
+  // e.g. DECIMAL_PLACES, in the scope of the `clone` function above.
 
 
   function bitFloor(n) {
@@ -23770,6 +24265,7 @@ module.exports = require("crypto");
 
     // Determine trailing zeros.
     for (j = r.length; r.charCodeAt(--j) === 48;);
+
     return r.slice(0, j + 1 || 1);
   }
 
@@ -23819,17 +24315,12 @@ module.exports = require("crypto");
    * Check that n is a primitive number, an integer, and in range, otherwise throw.
    */
   function intCheck(n, min, max, name) {
-    if (n < min || n > max || n !== (n < 0 ? mathceil(n) : mathfloor(n))) {
+    if (n < min || n > max || n !== mathfloor(n)) {
       throw Error
        (bignumberError + (name || 'Argument') + (typeof n == 'number'
          ? n < min || n > max ? ' out of range: ' : ' not an integer: '
-         : ' not a primitive number: ') + n);
+         : ' not a primitive number: ') + String(n));
     }
-  }
-
-
-  function isArray(obj) {
-    return Object.prototype.toString.call(obj) == '[object Array]';
   }
 
 
@@ -24215,14 +24706,27 @@ exports.default = parseProxyResponse;
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
 var __importStar = (this && this.__importStar) || function (mod) {
     if (mod && mod.__esModule) return mod;
     var result = {};
-    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
-    result["default"] = mod;
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
     return result;
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.issue = exports.issueCommand = void 0;
 const os = __importStar(__webpack_require__(87));
 const utils_1 = __webpack_require__(82);
 /**
@@ -24315,7 +24819,7 @@ function isSecureEndpoint() {
     const { stack } = new Error();
     if (typeof stack !== 'string')
         return false;
-    return stack.split('\n').some(l => l.indexOf('(https.js:') !== -1);
+    return stack.split('\n').some(l => l.indexOf('(https.js:') !== -1 || l.indexOf('node:https:') !== -1);
 }
 function createAgent(callback, opts) {
     return new createAgent.Agent(callback, opts);
@@ -24347,8 +24851,11 @@ function createAgent(callback, opts) {
             // for the TypeScript definition files in `@types/node` :/
             this.maxFreeSockets = 1;
             this.maxSockets = 1;
+            this.maxTotalSockets = Infinity;
             this.sockets = {};
+            this.freeSockets = {};
             this.requests = {};
+            this.options = {};
         }
         get defaultPort() {
             if (typeof this.explicitDefaultPort === 'number') {
@@ -24503,18 +25010,6 @@ module.exports = createAgent;
 
 /***/ }),
 
-/***/ 444:
-/***/ (function(module, __unusedexports, __webpack_require__) {
-
-"use strict";
-
-
-var Mime = __webpack_require__(217);
-module.exports = new Mime(__webpack_require__(460), __webpack_require__(983));
-
-
-/***/ }),
-
 /***/ 449:
 /***/ (function(__unusedmodule, exports, __webpack_require__) {
 
@@ -24534,11 +25029,11 @@ module.exports = new Mime(__webpack_require__(460), __webpack_require__(983));
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.OAuth2Client = exports.CertificateFormat = exports.CodeChallengeMethod = void 0;
 const querystring = __webpack_require__(191);
 const stream = __webpack_require__(413);
 const formatEcdsa = __webpack_require__(815);
 const crypto_1 = __webpack_require__(984);
-const messages = __webpack_require__(352);
 const authclient_1 = __webpack_require__(616);
 const loginticket_1 = __webpack_require__(207);
 var CodeChallengeMethod;
@@ -24585,7 +25080,9 @@ class OAuth2Client extends authclient_1.AuthClient {
             opts.scope = opts.scope.join(' ');
         }
         const rootUrl = OAuth2Client.GOOGLE_OAUTH2_AUTH_BASE_URL_;
-        return rootUrl + '?' + querystring.stringify(opts);
+        return (rootUrl +
+            '?' +
+            querystring.stringify(opts));
     }
     generateCodeVerifier() {
         // To make the code compatible with browser SubtleCrypto we need to make
@@ -24593,7 +25090,7 @@ class OAuth2Client extends authclient_1.AuthClient {
         throw new Error('generateCodeVerifier is removed, please use generateCodeVerifierAsync instead.');
     }
     /**
-     * Convenience method to automatically generate a code_verifier, and it's
+     * Convenience method to automatically generate a code_verifier, and its
      * resulting SHA256. If used, this must be paired with a S256
      * code_challenge_method.
      *
@@ -24744,15 +25241,6 @@ class OAuth2Client extends authclient_1.AuthClient {
             return { token: this.credentials.access_token };
         }
     }
-    getRequestMetadata(url, callback) {
-        messages.warn(messages.OAUTH_GET_REQUEST_METADATA_DEPRECATED);
-        if (callback) {
-            this.getRequestMetadataAsync(url).then(r => callback(null, r.headers, r.res), callback);
-        }
-        else {
-            return this.getRequestMetadataAsync();
-        }
-    }
     /**
      * The main authentication interface.  It takes an optional url which when
      * present is the endpoint being accessed, and returns a Promise which
@@ -24766,7 +25254,9 @@ class OAuth2Client extends authclient_1.AuthClient {
         const headers = (await this.getRequestMetadataAsync(url)).headers;
         return headers;
     }
-    async getRequestMetadataAsync(url) {
+    async getRequestMetadataAsync(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    url) {
         const thisCreds = this.credentials;
         if (!thisCreds.access_token && !thisCreds.refresh_token && !this.apiKey) {
             throw new Error('No access, refresh token or API key is set.');
@@ -24776,7 +25266,7 @@ class OAuth2Client extends authclient_1.AuthClient {
             const headers = {
                 Authorization: thisCreds.token_type + ' ' + thisCreds.access_token,
             };
-            return { headers };
+            return { headers: this.addSharedMetadataHeaders(headers) };
         }
         if (this.apiKey) {
             return { headers: { 'X-Goog-Api-Key': this.apiKey } };
@@ -24931,9 +25421,12 @@ class OAuth2Client extends authclient_1.AuthClient {
      */
     async getTokenInfo(accessToken) {
         const { data } = await this.transporter.request({
-            method: 'GET',
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Authorization: `Bearer ${accessToken}`,
+            },
             url: OAuth2Client.GOOGLE_TOKEN_INFO_URL,
-            params: { access_token: accessToken },
         });
         const info = Object.assign({
             expiry_date: new Date().getTime() + data.expires_in * 1000,
@@ -25019,7 +25512,6 @@ class OAuth2Client extends authclient_1.AuthClient {
         }
     }
     async getIapPublicKeysAsync() {
-        const nowTime = new Date().getTime();
         let res;
         const url = OAuth2Client.GOOGLE_OAUTH2_IAP_PUBLIC_KEY_URL_;
         try {
@@ -25079,7 +25571,7 @@ class OAuth2Client extends authclient_1.AuthClient {
         if (!payload) {
             throw new Error("Can't parse token payload: " + segments[1]);
         }
-        if (!certs.hasOwnProperty(envelope.kid)) {
+        if (!Object.prototype.hasOwnProperty.call(certs, envelope.kid)) {
             // If this is not present, then there's no reason to attempt verification
             throw new Error('No pem found for envelope: ' + JSON.stringify(envelope));
         }
@@ -27893,13 +28385,6 @@ exports.FetchError = FetchError;
 
 /***/ }),
 
-/***/ 460:
-/***/ (function(module) {
-
-module.exports = {"application/andrew-inset":["ez"],"application/applixware":["aw"],"application/atom+xml":["atom"],"application/atomcat+xml":["atomcat"],"application/atomsvc+xml":["atomsvc"],"application/bdoc":["bdoc"],"application/ccxml+xml":["ccxml"],"application/cdmi-capability":["cdmia"],"application/cdmi-container":["cdmic"],"application/cdmi-domain":["cdmid"],"application/cdmi-object":["cdmio"],"application/cdmi-queue":["cdmiq"],"application/cu-seeme":["cu"],"application/dash+xml":["mpd"],"application/davmount+xml":["davmount"],"application/docbook+xml":["dbk"],"application/dssc+der":["dssc"],"application/dssc+xml":["xdssc"],"application/ecmascript":["ecma","es"],"application/emma+xml":["emma"],"application/epub+zip":["epub"],"application/exi":["exi"],"application/font-tdpfr":["pfr"],"application/geo+json":["geojson"],"application/gml+xml":["gml"],"application/gpx+xml":["gpx"],"application/gxf":["gxf"],"application/gzip":["gz"],"application/hjson":["hjson"],"application/hyperstudio":["stk"],"application/inkml+xml":["ink","inkml"],"application/ipfix":["ipfix"],"application/java-archive":["jar","war","ear"],"application/java-serialized-object":["ser"],"application/java-vm":["class"],"application/javascript":["js","mjs"],"application/json":["json","map"],"application/json5":["json5"],"application/jsonml+json":["jsonml"],"application/ld+json":["jsonld"],"application/lost+xml":["lostxml"],"application/mac-binhex40":["hqx"],"application/mac-compactpro":["cpt"],"application/mads+xml":["mads"],"application/manifest+json":["webmanifest"],"application/marc":["mrc"],"application/marcxml+xml":["mrcx"],"application/mathematica":["ma","nb","mb"],"application/mathml+xml":["mathml"],"application/mbox":["mbox"],"application/mediaservercontrol+xml":["mscml"],"application/metalink+xml":["metalink"],"application/metalink4+xml":["meta4"],"application/mets+xml":["mets"],"application/mods+xml":["mods"],"application/mp21":["m21","mp21"],"application/mp4":["mp4s","m4p"],"application/msword":["doc","dot"],"application/mxf":["mxf"],"application/n-quads":["nq"],"application/n-triples":["nt"],"application/octet-stream":["bin","dms","lrf","mar","so","dist","distz","pkg","bpk","dump","elc","deploy","exe","dll","deb","dmg","iso","img","msi","msp","msm","buffer"],"application/oda":["oda"],"application/oebps-package+xml":["opf"],"application/ogg":["ogx"],"application/omdoc+xml":["omdoc"],"application/onenote":["onetoc","onetoc2","onetmp","onepkg"],"application/oxps":["oxps"],"application/patch-ops-error+xml":["xer"],"application/pdf":["pdf"],"application/pgp-encrypted":["pgp"],"application/pgp-signature":["asc","sig"],"application/pics-rules":["prf"],"application/pkcs10":["p10"],"application/pkcs7-mime":["p7m","p7c"],"application/pkcs7-signature":["p7s"],"application/pkcs8":["p8"],"application/pkix-attr-cert":["ac"],"application/pkix-cert":["cer"],"application/pkix-crl":["crl"],"application/pkix-pkipath":["pkipath"],"application/pkixcmp":["pki"],"application/pls+xml":["pls"],"application/postscript":["ai","eps","ps"],"application/pskc+xml":["pskcxml"],"application/raml+yaml":["raml"],"application/rdf+xml":["rdf","owl"],"application/reginfo+xml":["rif"],"application/relax-ng-compact-syntax":["rnc"],"application/resource-lists+xml":["rl"],"application/resource-lists-diff+xml":["rld"],"application/rls-services+xml":["rs"],"application/rpki-ghostbusters":["gbr"],"application/rpki-manifest":["mft"],"application/rpki-roa":["roa"],"application/rsd+xml":["rsd"],"application/rss+xml":["rss"],"application/rtf":["rtf"],"application/sbml+xml":["sbml"],"application/scvp-cv-request":["scq"],"application/scvp-cv-response":["scs"],"application/scvp-vp-request":["spq"],"application/scvp-vp-response":["spp"],"application/sdp":["sdp"],"application/set-payment-initiation":["setpay"],"application/set-registration-initiation":["setreg"],"application/shf+xml":["shf"],"application/sieve":["siv","sieve"],"application/smil+xml":["smi","smil"],"application/sparql-query":["rq"],"application/sparql-results+xml":["srx"],"application/srgs":["gram"],"application/srgs+xml":["grxml"],"application/sru+xml":["sru"],"application/ssdl+xml":["ssdl"],"application/ssml+xml":["ssml"],"application/tei+xml":["tei","teicorpus"],"application/thraud+xml":["tfi"],"application/timestamped-data":["tsd"],"application/voicexml+xml":["vxml"],"application/wasm":["wasm"],"application/widget":["wgt"],"application/winhlp":["hlp"],"application/wsdl+xml":["wsdl"],"application/wspolicy+xml":["wspolicy"],"application/xaml+xml":["xaml"],"application/xcap-diff+xml":["xdf"],"application/xenc+xml":["xenc"],"application/xhtml+xml":["xhtml","xht"],"application/xml":["xml","xsl","xsd","rng"],"application/xml-dtd":["dtd"],"application/xop+xml":["xop"],"application/xproc+xml":["xpl"],"application/xslt+xml":["xslt"],"application/xspf+xml":["xspf"],"application/xv+xml":["mxml","xhvml","xvml","xvm"],"application/yang":["yang"],"application/yin+xml":["yin"],"application/zip":["zip"],"audio/3gpp":["*3gpp"],"audio/adpcm":["adp"],"audio/basic":["au","snd"],"audio/midi":["mid","midi","kar","rmi"],"audio/mp3":["*mp3"],"audio/mp4":["m4a","mp4a"],"audio/mpeg":["mpga","mp2","mp2a","mp3","m2a","m3a"],"audio/ogg":["oga","ogg","spx"],"audio/s3m":["s3m"],"audio/silk":["sil"],"audio/wav":["wav"],"audio/wave":["*wav"],"audio/webm":["weba"],"audio/xm":["xm"],"font/collection":["ttc"],"font/otf":["otf"],"font/ttf":["ttf"],"font/woff":["woff"],"font/woff2":["woff2"],"image/aces":["exr"],"image/apng":["apng"],"image/bmp":["bmp"],"image/cgm":["cgm"],"image/dicom-rle":["drle"],"image/emf":["emf"],"image/fits":["fits"],"image/g3fax":["g3"],"image/gif":["gif"],"image/heic":["heic"],"image/heic-sequence":["heics"],"image/heif":["heif"],"image/heif-sequence":["heifs"],"image/ief":["ief"],"image/jls":["jls"],"image/jp2":["jp2","jpg2"],"image/jpeg":["jpeg","jpg","jpe"],"image/jpm":["jpm"],"image/jpx":["jpx","jpf"],"image/jxr":["jxr"],"image/ktx":["ktx"],"image/png":["png"],"image/sgi":["sgi"],"image/svg+xml":["svg","svgz"],"image/t38":["t38"],"image/tiff":["tif","tiff"],"image/tiff-fx":["tfx"],"image/webp":["webp"],"image/wmf":["wmf"],"message/disposition-notification":["disposition-notification"],"message/global":["u8msg"],"message/global-delivery-status":["u8dsn"],"message/global-disposition-notification":["u8mdn"],"message/global-headers":["u8hdr"],"message/rfc822":["eml","mime"],"model/3mf":["3mf"],"model/gltf+json":["gltf"],"model/gltf-binary":["glb"],"model/iges":["igs","iges"],"model/mesh":["msh","mesh","silo"],"model/stl":["stl"],"model/vrml":["wrl","vrml"],"model/x3d+binary":["*x3db","x3dbz"],"model/x3d+fastinfoset":["x3db"],"model/x3d+vrml":["*x3dv","x3dvz"],"model/x3d+xml":["x3d","x3dz"],"model/x3d-vrml":["x3dv"],"text/cache-manifest":["appcache","manifest"],"text/calendar":["ics","ifb"],"text/coffeescript":["coffee","litcoffee"],"text/css":["css"],"text/csv":["csv"],"text/html":["html","htm","shtml"],"text/jade":["jade"],"text/jsx":["jsx"],"text/less":["less"],"text/markdown":["markdown","md"],"text/mathml":["mml"],"text/mdx":["mdx"],"text/n3":["n3"],"text/plain":["txt","text","conf","def","list","log","in","ini"],"text/richtext":["rtx"],"text/rtf":["*rtf"],"text/sgml":["sgml","sgm"],"text/shex":["shex"],"text/slim":["slim","slm"],"text/stylus":["stylus","styl"],"text/tab-separated-values":["tsv"],"text/troff":["t","tr","roff","man","me","ms"],"text/turtle":["ttl"],"text/uri-list":["uri","uris","urls"],"text/vcard":["vcard"],"text/vtt":["vtt"],"text/xml":["*xml"],"text/yaml":["yaml","yml"],"video/3gpp":["3gp","3gpp"],"video/3gpp2":["3g2"],"video/h261":["h261"],"video/h263":["h263"],"video/h264":["h264"],"video/jpeg":["jpgv"],"video/jpm":["*jpm","jpgm"],"video/mj2":["mj2","mjp2"],"video/mp2t":["ts"],"video/mp4":["mp4","mp4v","mpg4"],"video/mpeg":["mpeg","mpg","mpe","m1v","m2v"],"video/ogg":["ogv"],"video/quicktime":["qt","mov"],"video/webm":["webm"]};
-
-/***/ }),
-
 /***/ 463:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -28014,6 +28499,25 @@ pki.privateKeyInfoToPem = function(pki, maxline) {
 
 "use strict";
 
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    Object.defineProperty(o, k2, { enumerable: true, get: function() { return m[k]; } });
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || function (mod) {
+    if (mod && mod.__esModule) return mod;
+    var result = {};
+    if (mod != null) for (var k in mod) if (k !== "default" && Object.hasOwnProperty.call(mod, k)) __createBinding(result, mod, k);
+    __setModuleDefault(result, mod);
+    return result;
+};
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -28023,14 +28527,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
         step((generator = generator.apply(thisArg, _arguments || [])).next());
     });
 };
-var __importStar = (this && this.__importStar) || function (mod) {
-    if (mod && mod.__esModule) return mod;
-    var result = {};
-    if (mod != null) for (var k in mod) if (Object.hasOwnProperty.call(mod, k)) result[k] = mod[k];
-    result["default"] = mod;
-    return result;
-};
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getState = exports.saveState = exports.group = exports.endGroup = exports.startGroup = exports.info = exports.warning = exports.error = exports.debug = exports.isDebug = exports.setFailed = exports.setCommandEcho = exports.setOutput = exports.getBooleanInput = exports.getMultilineInput = exports.getInput = exports.addPath = exports.setSecret = exports.exportVariable = exports.ExitCode = void 0;
 const command_1 = __webpack_require__(431);
 const file_command_1 = __webpack_require__(102);
 const utils_1 = __webpack_require__(82);
@@ -28097,7 +28595,9 @@ function addPath(inputPath) {
 }
 exports.addPath = addPath;
 /**
- * Gets the value of an input.  The value is also trimmed.
+ * Gets the value of an input.
+ * Unless trimWhitespace is set to false in InputOptions, the value is also trimmed.
+ * Returns an empty string if the value is not defined.
  *
  * @param     name     name of the input to get
  * @param     options  optional. See InputOptions.
@@ -28108,9 +28608,49 @@ function getInput(name, options) {
     if (options && options.required && !val) {
         throw new Error(`Input required and not supplied: ${name}`);
     }
+    if (options && options.trimWhitespace === false) {
+        return val;
+    }
     return val.trim();
 }
 exports.getInput = getInput;
+/**
+ * Gets the values of an multiline input.  Each value is also trimmed.
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   string[]
+ *
+ */
+function getMultilineInput(name, options) {
+    const inputs = getInput(name, options)
+        .split('\n')
+        .filter(x => x !== '');
+    return inputs;
+}
+exports.getMultilineInput = getMultilineInput;
+/**
+ * Gets the input value of the boolean type in the YAML 1.2 "core schema" specification.
+ * Support boolean input list: `true | True | TRUE | false | False | FALSE` .
+ * The return value is also in boolean type.
+ * ref: https://yaml.org/spec/1.2/spec.html#id2804923
+ *
+ * @param     name     name of the input to get
+ * @param     options  optional. See InputOptions.
+ * @returns   boolean
+ */
+function getBooleanInput(name, options) {
+    const trueValue = ['true', 'True', 'TRUE'];
+    const falseValue = ['false', 'False', 'FALSE'];
+    const val = getInput(name, options);
+    if (trueValue.includes(val))
+        return true;
+    if (falseValue.includes(val))
+        return false;
+    throw new TypeError(`Input does not meet YAML 1.2 "Core Schema" specification: ${name}\n` +
+        `Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
+}
+exports.getBooleanInput = getBooleanInput;
 /**
  * Sets the value of an output.
  *
@@ -28119,6 +28659,7 @@ exports.getInput = getInput;
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function setOutput(name, value) {
+    process.stdout.write(os.EOL);
     command_1.issueCommand('set-output', { name }, value);
 }
 exports.setOutput = setOutput;
@@ -28266,16 +28807,34 @@ exports.getState = getState;
  * See file LICENSE for detail or copy at https://opensource.org/licenses/MIT
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.requestTimeout = exports.resetIsAvailableCache = exports.isAvailable = exports.project = exports.instance = exports.HEADERS = exports.HEADER_VALUE = exports.HEADER_NAME = exports.SECONDARY_HOST_ADDRESS = exports.HOST_ADDRESS = exports.BASE_PATH = void 0;
 const gaxios_1 = __webpack_require__(597);
 const jsonBigint = __webpack_require__(738);
-exports.HOST_ADDRESS = 'http://169.254.169.254';
 exports.BASE_PATH = '/computeMetadata/v1';
-exports.BASE_URL = exports.HOST_ADDRESS + exports.BASE_PATH;
+exports.HOST_ADDRESS = 'http://169.254.169.254';
 exports.SECONDARY_HOST_ADDRESS = 'http://metadata.google.internal.';
-exports.SECONDARY_BASE_URL = exports.SECONDARY_HOST_ADDRESS + exports.BASE_PATH;
 exports.HEADER_NAME = 'Metadata-Flavor';
 exports.HEADER_VALUE = 'Google';
 exports.HEADERS = Object.freeze({ [exports.HEADER_NAME]: exports.HEADER_VALUE });
+/**
+ * Returns the base URL while taking into account the GCE_METADATA_HOST
+ * environment variable if it exists.
+ *
+ * @returns The base URL, e.g., http://169.254.169.254/computeMetadata/v1.
+ */
+function getBaseUrl(baseUrl) {
+    if (!baseUrl) {
+        baseUrl =
+            process.env.GCE_METADATA_IP ||
+                process.env.GCE_METADATA_HOST ||
+                exports.HOST_ADDRESS;
+    }
+    // If no scheme is provided default to HTTP:
+    if (!/^https?:\/\//.test(baseUrl)) {
+        baseUrl = `http://${baseUrl}`;
+    }
+    return new URL(exports.BASE_PATH, baseUrl).href;
+}
 // Accepts an options object passed from the user to the API. In previous
 // versions of the API, it referred to a `Request` or an `Axios` request
 // options object.  Now it refers to an object with very limited property
@@ -28289,7 +28848,7 @@ function validate(options) {
             case 'headers':
                 break;
             case 'qs':
-                throw new Error(`'qs' is not a valid configuration option. Please use 'params' instead.`);
+                throw new Error("'qs' is not a valid configuration option. Please use 'params' instead.");
             default:
                 throw new Error(`'${key}' is not a valid configuration option.`);
         }
@@ -28308,7 +28867,7 @@ async function metadataAccessor(type, options, noResponseRetries = 3, fastFail =
     try {
         const requestMethod = fastFail ? fastFailMetadataRequest : gaxios_1.request;
         const res = await requestMethod({
-            url: `${exports.BASE_URL}/${type}${property}`,
+            url: `${getBaseUrl()}/${type}${property}`,
             headers: Object.assign({}, exports.HEADERS, options.headers),
             retryConfig: { noResponseRetries },
             params: options.params,
@@ -28340,7 +28899,10 @@ async function metadataAccessor(type, options, noResponseRetries = 3, fastFail =
     }
 }
 async function fastFailMetadataRequest(options) {
-    const secondaryOptions = Object.assign(Object.assign({}, options), { url: options.url.replace(exports.BASE_URL, exports.SECONDARY_BASE_URL) });
+    const secondaryOptions = {
+        ...options,
+        url: options.url.replace(getBaseUrl(), getBaseUrl(exports.SECONDARY_HOST_ADDRESS)),
+    };
     // We race a connection between DNS/IP to metadata server. There are a couple
     // reasons for this:
     //
@@ -28387,12 +28949,18 @@ async function fastFailMetadataRequest(options) {
     });
     return Promise.race([r1, r2]);
 }
-// tslint:disable-next-line no-any
+/**
+ * Obtain metadata for the current GCE instance
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function instance(options) {
     return metadataAccessor('instance', options);
 }
 exports.instance = instance;
-// tslint:disable-next-line no-any
+/**
+ * Obtain metadata for the current GCP Project.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function project(options) {
     return metadataAccessor('project', options);
 }
@@ -28405,10 +28973,10 @@ function detectGCPAvailableRetries() {
         ? Number(process.env.DETECT_GCP_RETRIES)
         : 0;
 }
+let cachedIsAvailableResponse;
 /**
  * Determine if the metadata server is currently available.
  */
-let cachedIsAvailableResponse;
 async function isAvailable() {
     try {
         // If a user is instantiating several GCP libraries at the same time,
@@ -28416,7 +28984,11 @@ async function isAvailable() {
         // runtime environment. We use the same promise for each of these calls
         // to reduce the network load.
         if (cachedIsAvailableResponse === undefined) {
-            cachedIsAvailableResponse = metadataAccessor('instance', undefined, detectGCPAvailableRetries(), true);
+            cachedIsAvailableResponse = metadataAccessor('instance', undefined, detectGCPAvailableRetries(), 
+            // If the default HOST_ADDRESS has been overridden, we should not
+            // make an effort to try SECONDARY_HOST_ADDRESS (as we are likely in
+            // a non-GCP environment):
+            !(process.env.GCE_METADATA_IP || process.env.GCE_METADATA_HOST));
         }
         await cachedIsAvailableResponse;
         return true;
@@ -28430,23 +29002,30 @@ async function isAvailable() {
             // within ms.
             return false;
         }
-        else if (err.code &&
-            [
-                'EHOSTDOWN',
-                'EHOSTUNREACH',
-                'ENETUNREACH',
-                'ENOENT',
-                'ENOTFOUND',
-                'ECONNREFUSED',
-            ].includes(err.code)) {
+        if (err.response && err.response.status === 404) {
+            return false;
+        }
+        else {
+            if (!(err.response && err.response.status === 404) &&
+                // A warning is emitted if we see an unexpected err.code, or err.code
+                // is not populated:
+                (!err.code ||
+                    ![
+                        'EHOSTDOWN',
+                        'EHOSTUNREACH',
+                        'ENETUNREACH',
+                        'ENOENT',
+                        'ENOTFOUND',
+                        'ECONNREFUSED',
+                    ].includes(err.code))) {
+                let code = 'UNKNOWN';
+                if (err.code)
+                    code = err.code;
+                process.emitWarning(`received unexpected error = ${err.message} code = ${code}`, 'MetadataLookupWarning');
+            }
             // Failure to resolve the metadata service means that it is not available.
             return false;
         }
-        else if (err.response && err.response.status === 404) {
-            return false;
-        }
-        // Throw unexpected errors.
-        throw err;
     }
 }
 exports.isAvailable = isAvailable;
@@ -28457,6 +29036,9 @@ function resetIsAvailableCache() {
     cachedIsAvailableResponse = undefined;
 }
 exports.resetIsAvailableCache = resetIsAvailableCache;
+/**
+ * Obtain the timeout for requests to the metadata server.
+ */
 function requestTimeout() {
     // In testing, we were able to reproduce behavior similar to
     // https://github.com/googleapis/google-auth-library-nodejs/issues/798
@@ -28494,8 +29076,8 @@ exports.requestTimeout = requestTimeout;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.JWT = void 0;
 const gtoken_1 = __webpack_require__(403);
-const messages = __webpack_require__(352);
 const jwtaccess_1 = __webpack_require__(346);
 const oauth2client_1 = __webpack_require__(449);
 class JWT extends oauth2client_1.OAuth2Client {
@@ -28538,7 +29120,7 @@ class JWT extends oauth2client_1.OAuth2Client {
      * @param url the URI being authorized.
      */
     async getRequestMetadataAsync(url) {
-        if (!this.apiKey && !this.hasScopes() && url) {
+        if (!this.apiKey && !this.hasUserScopes() && url) {
             if (this.additionalClaims &&
                 this.additionalClaims.target_audience) {
                 const { tokens } = await this.refreshToken();
@@ -28552,14 +29134,19 @@ class JWT extends oauth2client_1.OAuth2Client {
                 // no scopes have been set, but a uri has been provided. Use JWTAccess
                 // credentials.
                 if (!this.access) {
-                    this.access = new jwtaccess_1.JWTAccess(this.email, this.key, this.keyId);
+                    this.access = new jwtaccess_1.JWTAccess(this.email, this.key, this.keyId, this.eagerRefreshThresholdMillis);
                 }
                 const headers = await this.access.getRequestHeaders(url, this.additionalClaims);
                 return { headers: this.addSharedMetadataHeaders(headers) };
             }
         }
-        else {
+        else if (this.hasAnyScopes() || this.apiKey) {
             return super.getRequestMetadataAsync(url);
+        }
+        else {
+            // If no audience, apiKey, or scopes are provided, we should not attempt
+            // to populate any headers:
+            return { headers: {} };
         }
     }
     /**
@@ -28571,7 +29158,7 @@ class JWT extends oauth2client_1.OAuth2Client {
         const gtoken = new gtoken_1.GoogleToken({
             iss: this.email,
             sub: this.subject,
-            scope: this.scopes,
+            scope: this.scopes || this.defaultScopes,
             keyFile: this.keyFile,
             key: this.key,
             additionalClaims: { target_audience: targetAudience },
@@ -28585,28 +29172,23 @@ class JWT extends oauth2client_1.OAuth2Client {
         return gtoken.idToken;
     }
     /**
-     * Indicates whether the credential requires scopes to be created by calling
-     * createScoped before use.
-     * @deprecated
-     * @return false if createScoped does not need to be called.
-     */
-    createScopedRequired() {
-        messages.warn(messages.JWT_CREATE_SCOPED_DEPRECATED);
-        return !this.hasScopes();
-    }
-    /**
      * Determine if there are currently scopes available.
      */
-    hasScopes() {
+    hasUserScopes() {
         if (!this.scopes) {
             return false;
         }
-        // For arrays, check the array length.
-        if (this.scopes instanceof Array) {
-            return this.scopes.length > 0;
-        }
-        // For others, convert to a string and check the length.
-        return String(this.scopes).length > 0;
+        return this.scopes.length > 0;
+    }
+    /**
+     * Are there any default or user scopes defined.
+     */
+    hasAnyScopes() {
+        if (this.scopes && this.scopes.length > 0)
+            return true;
+        if (this.defaultScopes && this.defaultScopes.length > 0)
+            return true;
+        return false;
     }
     authorize(callback) {
         if (callback) {
@@ -28632,7 +29214,9 @@ class JWT extends oauth2client_1.OAuth2Client {
      * @param refreshToken ignored
      * @private
      */
-    async refreshTokenNoCache(refreshToken) {
+    async refreshTokenNoCache(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    refreshToken) {
         const gtoken = this.createGToken();
         const token = await gtoken.getToken({
             forceRefresh: this.isTokenExpiring(),
@@ -28654,7 +29238,7 @@ class JWT extends oauth2client_1.OAuth2Client {
             this.gtoken = new gtoken_1.GoogleToken({
                 iss: this.email,
                 sub: this.subject,
-                scope: this.scopes,
+                scope: this.scopes || this.defaultScopes,
                 keyFile: this.keyFile,
                 key: this.key,
                 additionalClaims: this.additionalClaims,
@@ -28685,7 +29269,7 @@ class JWT extends oauth2client_1.OAuth2Client {
     }
     fromStream(inputStream, callback) {
         if (callback) {
-            this.fromStreamAsync(inputStream).then(r => callback(), callback);
+            this.fromStreamAsync(inputStream).then(() => callback(), callback);
         }
         else {
             return this.fromStreamAsync(inputStream);
@@ -29014,6 +29598,223 @@ function setup(env) {
 
 module.exports = setup;
 
+
+/***/ }),
+
+/***/ 509:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AwsRequestSigner = void 0;
+const crypto_1 = __webpack_require__(984);
+/** AWS Signature Version 4 signing algorithm identifier.  */
+const AWS_ALGORITHM = 'AWS4-HMAC-SHA256';
+/**
+ * The termination string for the AWS credential scope value as defined in
+ * https://docs.aws.amazon.com/general/latest/gr/sigv4-create-string-to-sign.html
+ */
+const AWS_REQUEST_TYPE = 'aws4_request';
+/**
+ * Implements an AWS API request signer based on the AWS Signature Version 4
+ * signing process.
+ * https://docs.aws.amazon.com/general/latest/gr/signature-version-4.html
+ */
+class AwsRequestSigner {
+    /**
+     * Instantiates an AWS API request signer used to send authenticated signed
+     * requests to AWS APIs based on the AWS Signature Version 4 signing process.
+     * This also provides a mechanism to generate the signed request without
+     * sending it.
+     * @param getCredentials A mechanism to retrieve AWS security credentials
+     *   when needed.
+     * @param region The AWS region to use.
+     */
+    constructor(getCredentials, region) {
+        this.getCredentials = getCredentials;
+        this.region = region;
+        this.crypto = crypto_1.createCrypto();
+    }
+    /**
+     * Generates the signed request for the provided HTTP request for calling
+     * an AWS API. This follows the steps described at:
+     * https://docs.aws.amazon.com/general/latest/gr/sigv4_signing.html
+     * @param amzOptions The AWS request options that need to be signed.
+     * @return A promise that resolves with the GaxiosOptions containing the
+     *   signed HTTP request parameters.
+     */
+    async getRequestOptions(amzOptions) {
+        if (!amzOptions.url) {
+            throw new Error('"url" is required in "amzOptions"');
+        }
+        // Stringify JSON requests. This will be set in the request body of the
+        // generated signed request.
+        const requestPayloadData = typeof amzOptions.data === 'object'
+            ? JSON.stringify(amzOptions.data)
+            : amzOptions.data;
+        const url = amzOptions.url;
+        const method = amzOptions.method || 'GET';
+        const requestPayload = amzOptions.body || requestPayloadData;
+        const additionalAmzHeaders = amzOptions.headers;
+        const awsSecurityCredentials = await this.getCredentials();
+        const uri = new URL(url);
+        const headerMap = await generateAuthenticationHeaderMap({
+            crypto: this.crypto,
+            host: uri.host,
+            canonicalUri: uri.pathname,
+            canonicalQuerystring: uri.search.substr(1),
+            method,
+            region: this.region,
+            securityCredentials: awsSecurityCredentials,
+            requestPayload,
+            additionalAmzHeaders,
+        });
+        // Append additional optional headers, eg. X-Amz-Target, Content-Type, etc.
+        const headers = Object.assign(
+        // Add x-amz-date if available.
+        headerMap.amzDate ? { 'x-amz-date': headerMap.amzDate } : {}, {
+            Authorization: headerMap.authorizationHeader,
+            host: uri.host,
+        }, additionalAmzHeaders || {});
+        if (awsSecurityCredentials.token) {
+            Object.assign(headers, {
+                'x-amz-security-token': awsSecurityCredentials.token,
+            });
+        }
+        const awsSignedReq = {
+            url,
+            method: method,
+            headers,
+        };
+        if (typeof requestPayload !== 'undefined') {
+            awsSignedReq.body = requestPayload;
+        }
+        return awsSignedReq;
+    }
+}
+exports.AwsRequestSigner = AwsRequestSigner;
+/**
+ * Creates the HMAC-SHA256 hash of the provided message using the
+ * provided key.
+ *
+ * @param crypto The crypto instance used to facilitate cryptographic
+ *   operations.
+ * @param key The HMAC-SHA256 key to use.
+ * @param msg The message to hash.
+ * @return The computed hash bytes.
+ */
+async function sign(crypto, key, msg) {
+    return await crypto.signWithHmacSha256(key, msg);
+}
+/**
+ * Calculates the signing key used to calculate the signature for
+ * AWS Signature Version 4 based on:
+ * https://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html
+ *
+ * @param crypto The crypto instance used to facilitate cryptographic
+ *   operations.
+ * @param key The AWS secret access key.
+ * @param dateStamp The '%Y%m%d' date format.
+ * @param region The AWS region.
+ * @param serviceName The AWS service name, eg. sts.
+ * @return The signing key bytes.
+ */
+async function getSigningKey(crypto, key, dateStamp, region, serviceName) {
+    const kDate = await sign(crypto, `AWS4${key}`, dateStamp);
+    const kRegion = await sign(crypto, kDate, region);
+    const kService = await sign(crypto, kRegion, serviceName);
+    const kSigning = await sign(crypto, kService, 'aws4_request');
+    return kSigning;
+}
+/**
+ * Generates the authentication header map needed for generating the AWS
+ * Signature Version 4 signed request.
+ *
+ * @param option The options needed to compute the authentication header map.
+ * @return The AWS authentication header map which constitutes of the following
+ *   components: amz-date, authorization header and canonical query string.
+ */
+async function generateAuthenticationHeaderMap(options) {
+    const additionalAmzHeaders = options.additionalAmzHeaders || {};
+    const requestPayload = options.requestPayload || '';
+    // iam.amazonaws.com host => iam service.
+    // sts.us-east-2.amazonaws.com => sts service.
+    const serviceName = options.host.split('.')[0];
+    const now = new Date();
+    // Format: '%Y%m%dT%H%M%SZ'.
+    const amzDate = now
+        .toISOString()
+        .replace(/[-:]/g, '')
+        .replace(/\.[0-9]+/, '');
+    // Format: '%Y%m%d'.
+    const dateStamp = now.toISOString().replace(/[-]/g, '').replace(/T.*/, '');
+    // Change all additional headers to be lower case.
+    const reformattedAdditionalAmzHeaders = {};
+    Object.keys(additionalAmzHeaders).forEach(key => {
+        reformattedAdditionalAmzHeaders[key.toLowerCase()] =
+            additionalAmzHeaders[key];
+    });
+    // Add AWS token if available.
+    if (options.securityCredentials.token) {
+        reformattedAdditionalAmzHeaders['x-amz-security-token'] =
+            options.securityCredentials.token;
+    }
+    // Header keys need to be sorted alphabetically.
+    const amzHeaders = Object.assign({
+        host: options.host,
+    }, 
+    // Previously the date was not fixed with x-amz- and could be provided manually.
+    // https://github.com/boto/botocore/blob/879f8440a4e9ace5d3cf145ce8b3d5e5ffb892ef/tests/unit/auth/aws4_testsuite/get-header-value-trim.req
+    reformattedAdditionalAmzHeaders.date ? {} : { 'x-amz-date': amzDate }, reformattedAdditionalAmzHeaders);
+    let canonicalHeaders = '';
+    const signedHeadersList = Object.keys(amzHeaders).sort();
+    signedHeadersList.forEach(key => {
+        canonicalHeaders += `${key}:${amzHeaders[key]}\n`;
+    });
+    const signedHeaders = signedHeadersList.join(';');
+    const payloadHash = await options.crypto.sha256DigestHex(requestPayload);
+    // https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html
+    const canonicalRequest = `${options.method}\n` +
+        `${options.canonicalUri}\n` +
+        `${options.canonicalQuerystring}\n` +
+        `${canonicalHeaders}\n` +
+        `${signedHeaders}\n` +
+        `${payloadHash}`;
+    const credentialScope = `${dateStamp}/${options.region}/${serviceName}/${AWS_REQUEST_TYPE}`;
+    // https://docs.aws.amazon.com/general/latest/gr/sigv4-create-string-to-sign.html
+    const stringToSign = `${AWS_ALGORITHM}\n` +
+        `${amzDate}\n` +
+        `${credentialScope}\n` +
+        (await options.crypto.sha256DigestHex(canonicalRequest));
+    // https://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html
+    const signingKey = await getSigningKey(options.crypto, options.securityCredentials.secretAccessKey, dateStamp, options.region, serviceName);
+    const signature = await sign(options.crypto, signingKey, stringToSign);
+    // https://docs.aws.amazon.com/general/latest/gr/sigv4-add-signature-to-request.html
+    const authorizationHeader = `${AWS_ALGORITHM} Credential=${options.securityCredentials.accessKeyId}/` +
+        `${credentialScope}, SignedHeaders=${signedHeaders}, ` +
+        `Signature=${crypto_1.fromArrayBufferToHex(signature)}`;
+    return {
+        // Do not return x-amz-date if date is available.
+        amzDate: reformattedAdditionalAmzHeaders.date ? undefined : amzDate,
+        authorizationHeader,
+        canonicalQuerystring: options.canonicalQuerystring,
+    };
+}
+//# sourceMappingURL=awsrequestsigner.js.map
 
 /***/ }),
 
@@ -30907,6 +31708,216 @@ exports.default = promisify;
 
 /***/ }),
 
+/***/ 549:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AwsClient = void 0;
+const awsrequestsigner_1 = __webpack_require__(509);
+const baseexternalclient_1 = __webpack_require__(48);
+/**
+ * AWS external account client. This is used for AWS workloads, where
+ * AWS STS GetCallerIdentity serialized signed requests are exchanged for
+ * GCP access token.
+ */
+class AwsClient extends baseexternalclient_1.BaseExternalAccountClient {
+    /**
+     * Instantiates an AwsClient instance using the provided JSON
+     * object loaded from an external account credentials file.
+     * An error is thrown if the credential is not a valid AWS credential.
+     * @param options The external account options object typically loaded
+     *   from the external account JSON credential file.
+     * @param additionalOptions Optional additional behavior customization
+     *   options. These currently customize expiration threshold time and
+     *   whether to retry on 401/403 API request errors.
+     */
+    constructor(options, additionalOptions) {
+        var _a;
+        super(options, additionalOptions);
+        this.environmentId = options.credential_source.environment_id;
+        // This is only required if the AWS region is not available in the
+        // AWS_REGION or AWS_DEFAULT_REGION environment variables.
+        this.regionUrl = options.credential_source.region_url;
+        // This is only required if AWS security credentials are not available in
+        // environment variables.
+        this.securityCredentialsUrl = options.credential_source.url;
+        this.regionalCredVerificationUrl =
+            options.credential_source.regional_cred_verification_url;
+        const match = (_a = this.environmentId) === null || _a === void 0 ? void 0 : _a.match(/^(aws)(\d+)$/);
+        if (!match || !this.regionalCredVerificationUrl) {
+            throw new Error('No valid AWS "credential_source" provided');
+        }
+        else if (parseInt(match[2], 10) !== 1) {
+            throw new Error(`aws version "${match[2]}" is not supported in the current build.`);
+        }
+        this.awsRequestSigner = null;
+        this.region = '';
+    }
+    /**
+     * Triggered when an external subject token is needed to be exchanged for a
+     * GCP access token via GCP STS endpoint.
+     * This uses the `options.credential_source` object to figure out how
+     * to retrieve the token using the current environment. In this case,
+     * this uses a serialized AWS signed request to the STS GetCallerIdentity
+     * endpoint.
+     * The logic is summarized as:
+     * 1. Retrieve AWS region from availability-zone.
+     * 2a. Check AWS credentials in environment variables. If not found, get
+     *     from security-credentials endpoint.
+     * 2b. Get AWS credentials from security-credentials endpoint. In order
+     *     to retrieve this, the AWS role needs to be determined by calling
+     *     security-credentials endpoint without any argument. Then the
+     *     credentials can be retrieved via: security-credentials/role_name
+     * 3. Generate the signed request to AWS STS GetCallerIdentity action.
+     * 4. Inject x-goog-cloud-target-resource into header and serialize the
+     *    signed request. This will be the subject-token to pass to GCP STS.
+     * @return A promise that resolves with the external subject token.
+     */
+    async retrieveSubjectToken() {
+        // Initialize AWS request signer if not already initialized.
+        if (!this.awsRequestSigner) {
+            this.region = await this.getAwsRegion();
+            this.awsRequestSigner = new awsrequestsigner_1.AwsRequestSigner(async () => {
+                // Check environment variables for permanent credentials first.
+                // https://docs.aws.amazon.com/general/latest/gr/aws-sec-cred-types.html
+                if (process.env['AWS_ACCESS_KEY_ID'] &&
+                    process.env['AWS_SECRET_ACCESS_KEY']) {
+                    return {
+                        accessKeyId: process.env['AWS_ACCESS_KEY_ID'],
+                        secretAccessKey: process.env['AWS_SECRET_ACCESS_KEY'],
+                        // This is normally not available for permanent credentials.
+                        token: process.env['AWS_SESSION_TOKEN'],
+                    };
+                }
+                // Since the role on a VM can change, we don't need to cache it.
+                const roleName = await this.getAwsRoleName();
+                // Temporary credentials typically last for several hours.
+                // Expiration is returned in response.
+                // Consider future optimization of this logic to cache AWS tokens
+                // until their natural expiration.
+                const awsCreds = await this.getAwsSecurityCredentials(roleName);
+                return {
+                    accessKeyId: awsCreds.AccessKeyId,
+                    secretAccessKey: awsCreds.SecretAccessKey,
+                    token: awsCreds.Token,
+                };
+            }, this.region);
+        }
+        // Generate signed request to AWS STS GetCallerIdentity API.
+        // Use the required regional endpoint. Otherwise, the request will fail.
+        const options = await this.awsRequestSigner.getRequestOptions({
+            url: this.regionalCredVerificationUrl.replace('{region}', this.region),
+            method: 'POST',
+        });
+        // The GCP STS endpoint expects the headers to be formatted as:
+        // [
+        //   {key: 'x-amz-date', value: '...'},
+        //   {key: 'Authorization', value: '...'},
+        //   ...
+        // ]
+        // And then serialized as:
+        // encodeURIComponent(JSON.stringify({
+        //   url: '...',
+        //   method: 'POST',
+        //   headers: [{key: 'x-amz-date', value: '...'}, ...]
+        // }))
+        const reformattedHeader = [];
+        const extendedHeaders = Object.assign({
+            // The full, canonical resource name of the workload identity pool
+            // provider, with or without the HTTPS prefix.
+            // Including this header as part of the signature is recommended to
+            // ensure data integrity.
+            'x-goog-cloud-target-resource': this.audience,
+        }, options.headers);
+        // Reformat header to GCP STS expected format.
+        for (const key in extendedHeaders) {
+            reformattedHeader.push({
+                key,
+                value: extendedHeaders[key],
+            });
+        }
+        // Serialize the reformatted signed request.
+        return encodeURIComponent(JSON.stringify({
+            url: options.url,
+            method: options.method,
+            headers: reformattedHeader,
+        }));
+    }
+    /**
+     * @return A promise that resolves with the current AWS region.
+     */
+    async getAwsRegion() {
+        // Priority order for region determination:
+        // AWS_REGION > AWS_DEFAULT_REGION > metadata server.
+        if (process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION']) {
+            return (process.env['AWS_REGION'] || process.env['AWS_DEFAULT_REGION']);
+        }
+        if (!this.regionUrl) {
+            throw new Error('Unable to determine AWS region due to missing ' +
+                '"options.credential_source.region_url"');
+        }
+        const opts = {
+            url: this.regionUrl,
+            method: 'GET',
+            responseType: 'text',
+        };
+        const response = await this.transporter.request(opts);
+        // Remove last character. For example, if us-east-2b is returned,
+        // the region would be us-east-2.
+        return response.data.substr(0, response.data.length - 1);
+    }
+    /**
+     * @return A promise that resolves with the assigned role to the current
+     *   AWS VM. This is needed for calling the security-credentials endpoint.
+     */
+    async getAwsRoleName() {
+        if (!this.securityCredentialsUrl) {
+            throw new Error('Unable to determine AWS role name due to missing ' +
+                '"options.credential_source.url"');
+        }
+        const opts = {
+            url: this.securityCredentialsUrl,
+            method: 'GET',
+            responseType: 'text',
+        };
+        const response = await this.transporter.request(opts);
+        return response.data;
+    }
+    /**
+     * Retrieves the temporary AWS credentials by calling the security-credentials
+     * endpoint as specified in the `credential_source` object.
+     * @param roleName The role attached to the current VM.
+     * @return A promise that resolves with the temporary AWS credentials
+     *   needed for creating the GetCallerIdentity signed request.
+     */
+    async getAwsSecurityCredentials(roleName) {
+        const response = await this.transporter.request({
+            url: `${this.securityCredentialsUrl}/${roleName}`,
+            responseType: 'json',
+        });
+        return response.data;
+    }
+}
+exports.AwsClient = AwsClient;
+//# sourceMappingURL=awsclient.js.map
+
+/***/ }),
+
 /***/ 575:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -31207,10 +32218,11 @@ mgf1.create = function(md) {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.request = exports.instance = exports.Gaxios = void 0;
 const gaxios_1 = __webpack_require__(830);
-exports.Gaxios = gaxios_1.Gaxios;
+Object.defineProperty(exports, "Gaxios", { enumerable: true, get: function () { return gaxios_1.Gaxios; } });
 var common_1 = __webpack_require__(259);
-exports.GaxiosError = common_1.GaxiosError;
+Object.defineProperty(exports, "GaxiosError", { enumerable: true, get: function () { return common_1.GaxiosError; } });
 /**
  * The default instance used when the `request` method is directly
  * invoked.
@@ -31561,7 +32573,7 @@ Yallist.prototype.sliceReverse = function (from, to) {
   return ret
 }
 
-Yallist.prototype.splice = function (start, deleteCount /*, ...nodes */) {
+Yallist.prototype.splice = function (start, deleteCount, ...nodes) {
   if (start > this.length) {
     start = this.length - 1
   }
@@ -31586,8 +32598,8 @@ Yallist.prototype.splice = function (start, deleteCount /*, ...nodes */) {
     walker = walker.prev
   }
 
-  for (var i = 2; i < arguments.length; i++) {
-    walker = insert(this, walker, arguments[i])
+  for (var i = 0; i < nodes.length; i++) {
+    walker = insert(this, walker, nodes[i])
   }
   return ret;
 }
@@ -31695,6 +32707,7 @@ module.exports = require("events");
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.AuthClient = void 0;
 const events_1 = __webpack_require__(614);
 const transporters_1 = __webpack_require__(974);
 class AuthClient extends events_1.EventEmitter {
@@ -31702,6 +32715,8 @@ class AuthClient extends events_1.EventEmitter {
         super(...arguments);
         this.transporter = new transporters_1.DefaultTransporter();
         this.credentials = {};
+        this.eagerRefreshThresholdMillis = 5 * 60 * 1000;
+        this.forceRefreshOnFailure = false;
     }
     /**
      * Sets the auth credentials.
@@ -32163,6 +33178,182 @@ p7v.recipientInfoValidator = {
 
 /***/ }),
 
+/***/ 640:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.DownscopedClient = exports.EXPIRATION_TIME_OFFSET = void 0;
+const authclient_1 = __webpack_require__(616);
+const sts = __webpack_require__(732);
+/**
+ * The required token exchange grant_type: rfc8693#section-2.1
+ */
+const STS_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
+/**
+ * The requested token exchange requested_token_type: rfc8693#section-2.1
+ */
+const STS_REQUEST_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
+/**
+ * The requested token exchange subject_token_type: rfc8693#section-2.1
+ */
+const STS_SUBJECT_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
+/** The STS access token exchange end point. */
+const STS_ACCESS_TOKEN_URL = 'https://sts.googleapis.com/v1beta/token';
+/**
+ * Offset to take into account network delays and server clock skews.
+ */
+exports.EXPIRATION_TIME_OFFSET = 5 * 60 * 1000;
+class DownscopedClient extends authclient_1.AuthClient {
+    constructor(client, cab, additionalOptions) {
+        super();
+        this.client = client;
+        this.cab = cab;
+        // Check a number of 1-10 access boundary rules are defined within credential access boundary.
+        if (cab.accessBoundary.accessBoundaryRules.length === 0) {
+            throw new Error('At least one access boundary rule needs to be defined.');
+        }
+        else if (cab.accessBoundary.accessBoundaryRules.length > 10) {
+            throw new Error('Access boundary rule exceeds limit, max 10 allowed.');
+        }
+        // Check at least one permission should be defined in each access boundary rule.
+        for (const rule of cab.accessBoundary.accessBoundaryRules) {
+            if (rule.availablePermissions.length === 0) {
+                throw new Error('At least one permission should be defined in access boundary rules.');
+            }
+        }
+        this.stsCredential = new sts.StsCredentials(STS_ACCESS_TOKEN_URL);
+        // Default OAuth scope. This could be overridden via public property.
+        this.cachedDownscopedAccessToken = null;
+        this.credentialAccessBoundary = cab;
+        this.authClient = client;
+        // As threshold could be zero,
+        // eagerRefreshThresholdMillis || EXPIRATION_TIME_OFFSET will override the
+        // zero value.
+        if (typeof (additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.eagerRefreshThresholdMillis) !== 'number') {
+            this.eagerRefreshThresholdMillis = exports.EXPIRATION_TIME_OFFSET;
+        }
+        else {
+            this.eagerRefreshThresholdMillis = additionalOptions
+                .eagerRefreshThresholdMillis;
+        }
+        this.forceRefreshOnFailure = !!(additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.forceRefreshOnFailure);
+    }
+    /**
+     * Provides a mechanism to inject Downscoped access tokens directly.
+     * When the provided credential expires, a new credential, using the
+     * external account options are retrieved.
+     * Notice DownscopedClient is the broker class mainly used for generate
+     * downscoped access tokens, it is unlikely we call this function in real
+     * use case.
+     * We implement to make this a helper function for testing all cases in getAccessToken().
+     * @param credentials The Credentials object to set on the current client.
+     */
+    setCredentials(credentials) {
+        super.setCredentials(credentials);
+        this.cachedDownscopedAccessToken = credentials;
+    }
+    async getAccessToken() {
+        // If the cached access token is unavailable or expired, force refresh.
+        // The Downscoped access token will be returned in GetAccessTokenResponse format.
+        // If cached access token is unavailable or expired, force refresh.
+        if (!this.cachedDownscopedAccessToken ||
+            this.isExpired(this.cachedDownscopedAccessToken)) {
+            await this.refreshAccessTokenAsync();
+        }
+        // Return Downscoped access token in GetAccessTokenResponse format.
+        return {
+            token: this.cachedDownscopedAccessToken.access_token,
+            res: this.cachedDownscopedAccessToken.res,
+        };
+    }
+    /**
+     * The main authentication interface. It takes an optional url which when
+     * present is the endpoint> being accessed, and returns a Promise which
+     * resolves with authorization header fields.
+     *
+     * The result has the form:
+     * { Authorization: 'Bearer <access_token_value>' }
+     */
+    async getRequestHeaders() {
+        throw new Error('Not implemented.');
+    }
+    request(opts, callback) {
+        throw new Error('Not implemented.');
+    }
+    /**
+     * Forces token refresh, even if unexpired tokens are currently cached.
+     * GCP access tokens are retrieved from authclient object/source credential.
+     * Thenm GCP access tokens are exchanged for downscoped access tokens via the
+     * token exchange endpoint.
+     * @return A promise that resolves with the fresh downscoped access token.
+     */
+    async refreshAccessTokenAsync() {
+        // Retrieve GCP access token from source credential.
+        const subjectToken = await (await this.authClient.getAccessToken()).token;
+        // Construct the STS credentials options.
+        const stsCredentialsOptions = {
+            grantType: STS_GRANT_TYPE,
+            requestedTokenType: STS_REQUEST_TOKEN_TYPE,
+            subjectToken: subjectToken,
+            subjectTokenType: STS_SUBJECT_TOKEN_TYPE,
+        };
+        // Exchange the source access token for a Downscoped access token.
+        const stsResponse = await this.stsCredential.exchangeToken(stsCredentialsOptions, undefined, this.credentialAccessBoundary);
+        // Save response in cached access token.
+        this.cachedDownscopedAccessToken = {
+            access_token: stsResponse.access_token,
+            expiry_date: new Date().getTime() + stsResponse.expires_in * 1000,
+            res: stsResponse.res,
+        };
+        // Save credentials.
+        this.credentials = {};
+        Object.assign(this.credentials, this.cachedDownscopedAccessToken);
+        delete this.credentials.res;
+        // Trigger tokens event to notify external listeners.
+        this.emit('tokens', {
+            refresh_token: null,
+            expiry_date: this.cachedDownscopedAccessToken.expiry_date,
+            access_token: this.cachedDownscopedAccessToken.access_token,
+            token_type: 'Bearer',
+            id_token: null,
+        });
+        // Return the cached access token.
+        return this.cachedDownscopedAccessToken;
+    }
+    /**
+     * Returns whether the provided credentials are expired or not.
+     * If there is no expiry time, assumes the token is not expired or expiring.
+     * @param downscopedAccessToken The credentials to check for expiration.
+     * @return Whether the credentials are expired or not.
+     */
+    isExpired(downscopedAccessToken) {
+        const now = new Date().getTime();
+        return downscopedAccessToken.expiry_date
+            ? now >=
+                downscopedAccessToken.expiry_date - this.eagerRefreshThresholdMillis
+            : false;
+    }
+}
+exports.DownscopedClient = DownscopedClient;
+//# sourceMappingURL=downscopedclient.js.map
+
+/***/ }),
+
 /***/ 642:
 /***/ (function(__unusedmodule, exports) {
 
@@ -32181,7 +33372,9 @@ p7v.recipientInfoValidator = {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getRetryConfig = void 0;
 async function getRetryConfig(err) {
+    var _a;
     let config = getConfig(err);
     if (!err || !err.config || (!config && !err.config.retry)) {
         return { shouldRetry: false };
@@ -32224,8 +33417,10 @@ async function getRetryConfig(err) {
         return { shouldRetry: false, config: err.config };
     }
     // Calculate time to wait with exponential backoff.
-    // Formula: (2^c - 1 / 2) * 1000
-    const delay = ((Math.pow(2, config.currentRetryAttempt) - 1) / 2) * 1000;
+    // If this is the first retry, look for a configured retryDelay.
+    const retryDelay = config.currentRetryAttempt ? 0 : (_a = config.retryDelay) !== null && _a !== void 0 ? _a : 100;
+    // Formula: retryDelay + ((2^c - 1 / 2) * 1000)
+    const delay = retryDelay + ((Math.pow(2, config.currentRetryAttempt) - 1) / 2) * 1000;
     // We're going to retry!  Incremenent the counter.
     err.config.retryConfig.currentRetryAttempt += 1;
     // Create a promise that invokes the retry after the backOffDelay
@@ -32393,6 +33588,7 @@ module.exports = SignStream;
 "use strict";
 
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GoogleAuth = exports.auth = void 0;
 // Copyright 2017 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -32407,28 +33603,38 @@ Object.defineProperty(exports, "__esModule", { value: true });
 // See the License for the specific language governing permissions and
 // limitations under the License.
 const googleauth_1 = __webpack_require__(948);
-exports.GoogleAuth = googleauth_1.GoogleAuth;
+Object.defineProperty(exports, "GoogleAuth", { enumerable: true, get: function () { return googleauth_1.GoogleAuth; } });
 var computeclient_1 = __webpack_require__(310);
-exports.Compute = computeclient_1.Compute;
+Object.defineProperty(exports, "Compute", { enumerable: true, get: function () { return computeclient_1.Compute; } });
 var envDetect_1 = __webpack_require__(813);
-exports.GCPEnv = envDetect_1.GCPEnv;
+Object.defineProperty(exports, "GCPEnv", { enumerable: true, get: function () { return envDetect_1.GCPEnv; } });
+var downscopedclient_1 = __webpack_require__(640);
+Object.defineProperty(exports, "DownscopedClient", { enumerable: true, get: function () { return downscopedclient_1.DownscopedClient; } });
 var iam_1 = __webpack_require__(866);
-exports.IAMAuth = iam_1.IAMAuth;
+Object.defineProperty(exports, "IAMAuth", { enumerable: true, get: function () { return iam_1.IAMAuth; } });
 var idtokenclient_1 = __webpack_require__(331);
-exports.IdTokenClient = idtokenclient_1.IdTokenClient;
+Object.defineProperty(exports, "IdTokenClient", { enumerable: true, get: function () { return idtokenclient_1.IdTokenClient; } });
 var jwtaccess_1 = __webpack_require__(346);
-exports.JWTAccess = jwtaccess_1.JWTAccess;
+Object.defineProperty(exports, "JWTAccess", { enumerable: true, get: function () { return jwtaccess_1.JWTAccess; } });
 var jwtclient_1 = __webpack_require__(484);
-exports.JWT = jwtclient_1.JWT;
+Object.defineProperty(exports, "JWT", { enumerable: true, get: function () { return jwtclient_1.JWT; } });
 var oauth2client_1 = __webpack_require__(449);
-exports.CodeChallengeMethod = oauth2client_1.CodeChallengeMethod;
-exports.OAuth2Client = oauth2client_1.OAuth2Client;
+Object.defineProperty(exports, "CodeChallengeMethod", { enumerable: true, get: function () { return oauth2client_1.CodeChallengeMethod; } });
+Object.defineProperty(exports, "OAuth2Client", { enumerable: true, get: function () { return oauth2client_1.OAuth2Client; } });
 var loginticket_1 = __webpack_require__(207);
-exports.LoginTicket = loginticket_1.LoginTicket;
+Object.defineProperty(exports, "LoginTicket", { enumerable: true, get: function () { return loginticket_1.LoginTicket; } });
 var refreshclient_1 = __webpack_require__(846);
-exports.UserRefreshClient = refreshclient_1.UserRefreshClient;
+Object.defineProperty(exports, "UserRefreshClient", { enumerable: true, get: function () { return refreshclient_1.UserRefreshClient; } });
+var awsclient_1 = __webpack_require__(549);
+Object.defineProperty(exports, "AwsClient", { enumerable: true, get: function () { return awsclient_1.AwsClient; } });
+var identitypoolclient_1 = __webpack_require__(345);
+Object.defineProperty(exports, "IdentityPoolClient", { enumerable: true, get: function () { return identitypoolclient_1.IdentityPoolClient; } });
+var externalclient_1 = __webpack_require__(992);
+Object.defineProperty(exports, "ExternalAccountClient", { enumerable: true, get: function () { return externalclient_1.ExternalAccountClient; } });
+var baseexternalclient_1 = __webpack_require__(48);
+Object.defineProperty(exports, "BaseExternalAccountClient", { enumerable: true, get: function () { return baseexternalclient_1.BaseExternalAccountClient; } });
 var transporters_1 = __webpack_require__(974);
-exports.DefaultTransporter = transporters_1.DefaultTransporter;
+Object.defineProperty(exports, "DefaultTransporter", { enumerable: true, get: function () { return transporters_1.DefaultTransporter; } });
 const auth = new googleauth_1.GoogleAuth();
 exports.auth = auth;
 //# sourceMappingURL=index.js.map
@@ -32445,11 +33651,12 @@ module.exports = require("util");
 /***/ 671:
 /***/ (function() {
 
-(function(l){function m(){}function k(b,a){b=void 0===b?"utf-8":b;a=void 0===a?{fatal:!1}:a;if(-1==n.indexOf(b.toLowerCase()))throw new RangeError("Failed to construct 'TextDecoder': The encoding label provided ('"+b+"') is invalid.");if(a.fatal)throw Error("Failed to construct 'TextDecoder': the 'fatal' option is unsupported.");}if(l.TextEncoder&&l.TextDecoder)return!1;var n=["utf-8","utf8","unicode-1-1-utf-8"];Object.defineProperty(m.prototype,"encoding",{value:"utf-8"});m.prototype.encode=function(b,
-a){a=void 0===a?{stream:!1}:a;if(a.stream)throw Error("Failed to encode: the 'stream' option is unsupported.");a=0;for(var g=b.length,f=0,c=Math.max(32,g+(g>>1)+7),e=new Uint8Array(c>>3<<3);a<g;){var d=b.charCodeAt(a++);if(55296<=d&&56319>=d){if(a<g){var h=b.charCodeAt(a);56320===(h&64512)&&(++a,d=((d&1023)<<10)+(h&1023)+65536)}if(55296<=d&&56319>=d)continue}f+4>e.length&&(c+=8,c*=1+a/b.length*2,c=c>>3<<3,h=new Uint8Array(c),h.set(e),e=h);if(0===(d&4294967168))e[f++]=d;else{if(0===(d&4294965248))e[f++]=
-d>>6&31|192;else if(0===(d&4294901760))e[f++]=d>>12&15|224,e[f++]=d>>6&63|128;else if(0===(d&4292870144))e[f++]=d>>18&7|240,e[f++]=d>>12&63|128,e[f++]=d>>6&63|128;else continue;e[f++]=d&63|128}}return e.slice?e.slice(0,f):e.subarray(0,f)};Object.defineProperty(k.prototype,"encoding",{value:"utf-8"});Object.defineProperty(k.prototype,"fatal",{value:!1});Object.defineProperty(k.prototype,"ignoreBOM",{value:!1});k.prototype.decode=function(b,a){a=void 0===a?{stream:!1}:a;if(a.stream)throw Error("Failed to decode: the 'stream' option is unsupported.");
-b.buffer instanceof ArrayBuffer&&(b=b.buffer);b=new Uint8Array(b);a=0;for(var g=[],f=[];;){var c=a<b.length;if(!c||a&65536){f.push(String.fromCharCode.apply(null,g));if(!c)return f.join("");g=[];b=b.subarray(a);a=0}c=b[a++];if(0===c)g.push(0);else if(0===(c&128))g.push(c);else if(192===(c&224)){var e=b[a++]&63;g.push((c&31)<<6|e)}else if(224===(c&240)){e=b[a++]&63;var d=b[a++]&63;g.push((c&31)<<12|e<<6|d)}else if(240===(c&248)){e=b[a++]&63;d=b[a++]&63;var h=b[a++]&63;c=(c&7)<<18|e<<12|d<<6|h;65535<
-c&&(c-=65536,g.push(c>>>10&1023|55296),c=56320|c&1023);g.push(c)}}};l.TextEncoder=m;l.TextDecoder=k})("undefined"!==typeof window?window:"undefined"!==typeof global?global:this);
+(function(l){function m(){}function k(a,c){a=void 0===a?"utf-8":a;c=void 0===c?{fatal:!1}:c;if(-1===r.indexOf(a.toLowerCase()))throw new RangeError("Failed to construct 'TextDecoder': The encoding label provided ('"+a+"') is invalid.");if(c.fatal)throw Error("Failed to construct 'TextDecoder': the 'fatal' option is unsupported.");}function t(a){return Buffer.from(a.buffer,a.byteOffset,a.byteLength).toString("utf-8")}function u(a){var c=URL.createObjectURL(new Blob([a],{type:"text/plain;charset=UTF-8"}));
+try{var f=new XMLHttpRequest;f.open("GET",c,!1);f.send();return f.responseText}catch(e){return q(a)}finally{URL.revokeObjectURL(c)}}function q(a){for(var c=0,f=Math.min(65536,a.length+1),e=new Uint16Array(f),h=[],d=0;;){var b=c<a.length;if(!b||d>=f-1){h.push(String.fromCharCode.apply(null,e.subarray(0,d)));if(!b)return h.join("");a=a.subarray(c);d=c=0}b=a[c++];if(0===(b&128))e[d++]=b;else if(192===(b&224)){var g=a[c++]&63;e[d++]=(b&31)<<6|g}else if(224===(b&240)){g=a[c++]&63;var n=a[c++]&63;e[d++]=
+(b&31)<<12|g<<6|n}else if(240===(b&248)){g=a[c++]&63;n=a[c++]&63;var v=a[c++]&63;b=(b&7)<<18|g<<12|n<<6|v;65535<b&&(b-=65536,e[d++]=b>>>10&1023|55296,b=56320|b&1023);e[d++]=b}}}if(l.TextEncoder&&l.TextDecoder)return!1;var r=["utf-8","utf8","unicode-1-1-utf-8"];Object.defineProperty(m.prototype,"encoding",{value:"utf-8"});m.prototype.encode=function(a,c){c=void 0===c?{stream:!1}:c;if(c.stream)throw Error("Failed to encode: the 'stream' option is unsupported.");c=0;for(var f=a.length,e=0,h=Math.max(32,
+f+(f>>>1)+7),d=new Uint8Array(h>>>3<<3);c<f;){var b=a.charCodeAt(c++);if(55296<=b&&56319>=b){if(c<f){var g=a.charCodeAt(c);56320===(g&64512)&&(++c,b=((b&1023)<<10)+(g&1023)+65536)}if(55296<=b&&56319>=b)continue}e+4>d.length&&(h+=8,h*=1+c/a.length*2,h=h>>>3<<3,g=new Uint8Array(h),g.set(d),d=g);if(0===(b&4294967168))d[e++]=b;else{if(0===(b&4294965248))d[e++]=b>>>6&31|192;else if(0===(b&4294901760))d[e++]=b>>>12&15|224,d[e++]=b>>>6&63|128;else if(0===(b&4292870144))d[e++]=b>>>18&7|240,d[e++]=b>>>12&
+63|128,d[e++]=b>>>6&63|128;else continue;d[e++]=b&63|128}}return d.slice?d.slice(0,e):d.subarray(0,e)};Object.defineProperty(k.prototype,"encoding",{value:"utf-8"});Object.defineProperty(k.prototype,"fatal",{value:!1});Object.defineProperty(k.prototype,"ignoreBOM",{value:!1});var p=q;"function"===typeof Buffer&&Buffer.from?p=t:"function"===typeof Blob&&"function"===typeof URL&&"function"===typeof URL.createObjectURL&&(p=u);k.prototype.decode=function(a,c){c=void 0===c?{stream:!1}:c;if(c.stream)throw Error("Failed to decode: the 'stream' option is unsupported.");
+a=a instanceof Uint8Array?a:a.buffer instanceof ArrayBuffer?new Uint8Array(a.buffer):new Uint8Array(a);return p(a)};l.TextEncoder=m;l.TextDecoder=k})("undefined"!==typeof window?window:"undefined"!==typeof global?global:this);
 
 
 /***/ }),
@@ -33807,6 +35014,121 @@ module.exports = forge.random;
 
 })();
 
+
+/***/ }),
+
+/***/ 732:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.StsCredentials = void 0;
+const querystring = __webpack_require__(191);
+const transporters_1 = __webpack_require__(974);
+const oauth2common_1 = __webpack_require__(937);
+/**
+ * Implements the OAuth 2.0 token exchange based on
+ * https://tools.ietf.org/html/rfc8693
+ */
+class StsCredentials extends oauth2common_1.OAuthClientAuthHandler {
+    /**
+     * Initializes an STS credentials instance.
+     * @param tokenExchangeEndpoint The token exchange endpoint.
+     * @param clientAuthentication The client authentication credentials if
+     *   available.
+     */
+    constructor(tokenExchangeEndpoint, clientAuthentication) {
+        super(clientAuthentication);
+        this.tokenExchangeEndpoint = tokenExchangeEndpoint;
+        this.transporter = new transporters_1.DefaultTransporter();
+    }
+    /**
+     * Exchanges the provided token for another type of token based on the
+     * rfc8693 spec.
+     * @param stsCredentialsOptions The token exchange options used to populate
+     *   the token exchange request.
+     * @param additionalHeaders Optional additional headers to pass along the
+     *   request.
+     * @param options Optional additional GCP-specific non-spec defined options
+     *   to send with the request.
+     *   Example: `&options=${encodeUriComponent(JSON.stringified(options))}`
+     * @return A promise that resolves with the token exchange response containing
+     *   the requested token and its expiration time.
+     */
+    async exchangeToken(stsCredentialsOptions, additionalHeaders, 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    options) {
+        var _a, _b, _c;
+        const values = {
+            grant_type: stsCredentialsOptions.grantType,
+            resource: stsCredentialsOptions.resource,
+            audience: stsCredentialsOptions.audience,
+            scope: (_a = stsCredentialsOptions.scope) === null || _a === void 0 ? void 0 : _a.join(' '),
+            requested_token_type: stsCredentialsOptions.requestedTokenType,
+            subject_token: stsCredentialsOptions.subjectToken,
+            subject_token_type: stsCredentialsOptions.subjectTokenType,
+            actor_token: (_b = stsCredentialsOptions.actingParty) === null || _b === void 0 ? void 0 : _b.actorToken,
+            actor_token_type: (_c = stsCredentialsOptions.actingParty) === null || _c === void 0 ? void 0 : _c.actorTokenType,
+            // Non-standard GCP-specific options.
+            options: options && JSON.stringify(options),
+        };
+        // Remove undefined fields.
+        Object.keys(values).forEach(key => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            if (typeof values[key] === 'undefined') {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                delete values[key];
+            }
+        });
+        const headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+        };
+        // Inject additional STS headers if available.
+        Object.assign(headers, additionalHeaders || {});
+        const opts = {
+            url: this.tokenExchangeEndpoint,
+            method: 'POST',
+            headers,
+            data: querystring.stringify(values),
+            responseType: 'json',
+        };
+        // Apply OAuth client authentication.
+        this.applyClientAuthenticationOptions(opts);
+        try {
+            const response = await this.transporter.request(opts);
+            // Successful response.
+            const stsSuccessfulResponse = response.data;
+            stsSuccessfulResponse.res = response;
+            return stsSuccessfulResponse;
+        }
+        catch (error) {
+            // Translate error to OAuthError.
+            if (error.response) {
+                throw oauth2common_1.getErrorFromOAuthErrorResponse(error.response.data, 
+                // Preserve other fields from the original error.
+                error);
+            }
+            // Request could fail before the server responds.
+            throw error;
+        }
+    }
+}
+exports.StsCredentials = StsCredentials;
+//# sourceMappingURL=stscredentials.js.map
 
 /***/ }),
 
@@ -35891,6 +37213,7 @@ forge.log.consoleLogger = sConsoleLogger;
  * limitations under the License.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Reference = void 0;
 /**
  * Parses a string of the format `outout:secret`. For example:
  *
@@ -35975,6 +37298,7 @@ exports.Reference = Reference;
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getEnv = exports.clear = exports.GCPEnv = void 0;
 const gcpMetadata = __webpack_require__(479);
 var GCPEnv;
 (function (GCPEnv) {
@@ -35982,6 +37306,7 @@ var GCPEnv;
     GCPEnv["KUBERNETES_ENGINE"] = "KUBERNETES_ENGINE";
     GCPEnv["CLOUD_FUNCTIONS"] = "CLOUD_FUNCTIONS";
     GCPEnv["COMPUTE_ENGINE"] = "COMPUTE_ENGINE";
+    GCPEnv["CLOUD_RUN"] = "CLOUD_RUN";
     GCPEnv["NONE"] = "NONE";
 })(GCPEnv = exports.GCPEnv || (exports.GCPEnv = {}));
 let envPromise;
@@ -36009,6 +37334,9 @@ async function getEnvMemoized() {
         if (await isKubernetesEngine()) {
             env = GCPEnv.KUBERNETES_ENGINE;
         }
+        else if (isCloudRun()) {
+            env = GCPEnv.CLOUD_RUN;
+        }
         else {
             env = GCPEnv.COMPUTE_ENGINE;
         }
@@ -36023,6 +37351,14 @@ function isAppEngine() {
 }
 function isCloudFunction() {
     return !!(process.env.FUNCTION_NAME || process.env.FUNCTION_TARGET);
+}
+/**
+ * This check only verifies that the environment is running knative.
+ * This must be run *after* checking for Kubernetes, otherwise it will
+ * return a false positive.
+ */
+function isCloudRun() {
+    return !!process.env.K_CONFIGURATION;
 }
 async function isKubernetesEngine() {
     try {
@@ -37354,29 +38690,39 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Gaxios = void 0;
 const extend_1 = __importDefault(__webpack_require__(374));
+const https_1 = __webpack_require__(211);
 const node_fetch_1 = __importDefault(__webpack_require__(454));
 const querystring_1 = __importDefault(__webpack_require__(191));
 const is_stream_1 = __importDefault(__webpack_require__(323));
-const url_1 = __importDefault(__webpack_require__(835));
+const url_1 = __webpack_require__(835);
 const common_1 = __webpack_require__(259);
 const retry_1 = __webpack_require__(642);
-// tslint:disable no-any
-const URL = hasURL() ? window.URL : url_1.default.URL;
+/* eslint-disable @typescript-eslint/no-explicit-any */
 const fetch = hasFetch() ? window.fetch : node_fetch_1.default;
 function hasWindow() {
     return typeof window !== 'undefined' && !!window;
 }
-function hasURL() {
-    return hasWindow() && !!window.URL;
-}
 function hasFetch() {
     return hasWindow() && !!window.fetch;
 }
-// tslint:disable-next-line variable-name
+function hasBuffer() {
+    return typeof Buffer !== 'undefined';
+}
+function hasHeader(options, header) {
+    return !!getHeader(options, header);
+}
+function getHeader(options, header) {
+    header = header.toLowerCase();
+    for (const key of Object.keys((options === null || options === void 0 ? void 0 : options.headers) || {})) {
+        if (header === key.toLowerCase()) {
+            return options.headers[key];
+        }
+    }
+    return undefined;
+}
 let HttpsProxyAgent;
-// Figure out if we should be using a proxy. Only if it's required, load
-// the https-proxy-agent module as it adds startup cost.
 function loadProxy() {
     const proxy = process.env.HTTPS_PROXY ||
         process.env.https_proxy ||
@@ -37388,6 +38734,36 @@ function loadProxy() {
     return proxy;
 }
 loadProxy();
+function skipProxy(url) {
+    var _a;
+    const noProxyEnv = (_a = process.env.NO_PROXY) !== null && _a !== void 0 ? _a : process.env.no_proxy;
+    if (!noProxyEnv) {
+        return false;
+    }
+    const noProxyUrls = noProxyEnv.split(',');
+    const parsedURL = new url_1.URL(url);
+    return !!noProxyUrls.find(url => {
+        if (url.startsWith('*.') || url.startsWith('.')) {
+            url = url.replace('*', '');
+            return parsedURL.hostname.endsWith(url);
+        }
+        else {
+            return url === parsedURL.origin || url === parsedURL.hostname;
+        }
+    });
+}
+// Figure out if we should be using a proxy. Only if it's required, load
+// the https-proxy-agent module as it adds startup cost.
+function getProxy(url) {
+    // If there is a match between the no_proxy env variables and the url, then do not proxy
+    if (skipProxy(url)) {
+        return undefined;
+        // If there is not a match between the no_proxy env variables and the url, check to see if there should be a proxy
+    }
+    else {
+        return loadProxy();
+    }
+}
 class Gaxios {
     /**
      * The Gaxios class is responsible for making HTTP requests.
@@ -37405,6 +38781,12 @@ class Gaxios {
         opts = this.validateOpts(opts);
         return this._request(opts);
     }
+    async _defaultAdapter(opts) {
+        const fetchImpl = opts.fetchImplementation || fetch;
+        const res = (await fetchImpl(opts.url, opts));
+        const data = await this.getResponseData(opts, res);
+        return this.translateResponse(opts, res, data);
+    }
     /**
      * Internal, retryable version of the `request` method.
      * @param opts Set of HTTP options that will be used for this HTTP request.
@@ -37413,12 +38795,10 @@ class Gaxios {
         try {
             let translatedResponse;
             if (opts.adapter) {
-                translatedResponse = await opts.adapter(opts);
+                translatedResponse = await opts.adapter(opts, this._defaultAdapter.bind(this));
             }
             else {
-                const res = await fetch(opts.url, opts);
-                const data = await this.getResponseData(opts, res);
-                translatedResponse = this.translateResponse(opts, res, data);
+                translatedResponse = await this._defaultAdapter(opts);
             }
             if (!opts.validateStatus(translatedResponse.status)) {
                 throw new common_1.GaxiosError(`Request failed with status code ${translatedResponse.status}`, opts, translatedResponse);
@@ -37430,7 +38810,8 @@ class Gaxios {
             err.config = opts;
             const { shouldRetry, config } = await retry_1.getRetryConfig(e);
             if (shouldRetry && config) {
-                err.config.retryConfig.currentRetryAttempt = config.retryConfig.currentRetryAttempt;
+                err.config.retryConfig.currentRetryAttempt =
+                    config.retryConfig.currentRetryAttempt;
                 return this._request(err.config);
             }
             throw err;
@@ -37440,13 +38821,16 @@ class Gaxios {
         switch (opts.responseType) {
             case 'stream':
                 return res.body;
-            case 'json':
+            case 'json': {
                 let data = await res.text();
                 try {
                     data = JSON.parse(data);
                 }
-                catch (e) { }
+                catch (_a) {
+                    // continue
+                }
                 return data;
+            }
             case 'arraybuffer':
                 return res.arrayBuffer();
             case 'blob':
@@ -37469,15 +38853,15 @@ class Gaxios {
         if (baseUrl) {
             opts.url = baseUrl + opts.url;
         }
-        const parsedUrl = new URL(opts.url);
-        opts.url = `${parsedUrl.origin}${parsedUrl.pathname}`;
-        opts.params = extend_1.default(querystring_1.default.parse(parsedUrl.search.substr(1)), // removes leading ?
-        opts.params);
         opts.paramsSerializer = opts.paramsSerializer || this.paramsSerializer;
-        if (opts.params) {
-            parsedUrl.search = opts.paramsSerializer(opts.params);
+        if (opts.params && Object.keys(opts.params).length > 0) {
+            let additionalQueryParams = opts.paramsSerializer(opts.params);
+            if (additionalQueryParams.startsWith('?')) {
+                additionalQueryParams = additionalQueryParams.slice(1);
+            }
+            const prefix = opts.url.includes('?') ? '&' : '?';
+            opts.url = opts.url + prefix + additionalQueryParams;
         }
-        opts.url = parsedUrl.href;
         if (typeof options.maxContentLength === 'number') {
             opts.size = options.maxContentLength;
         }
@@ -37489,19 +38873,25 @@ class Gaxios {
             if (is_stream_1.default.readable(opts.data)) {
                 opts.body = opts.data;
             }
-            else if (typeof opts.data === 'object') {
-                opts.body = JSON.stringify(opts.data);
-                // Allow the user to specifiy their own content type,
-                // such as application/json-patch+json; for historical reasons this
-                // content type must currently be a json type, as we are relying on
-                // application/x-www-form-urlencoded (which is incompatible with
-                // upstream GCP APIs) being rewritten to application/json.
-                //
-                // TODO: refactor upstream dependencies to stop relying on this
-                // side-effect.
-                if (!opts.headers['Content-Type'] ||
-                    !opts.headers['Content-Type'].includes('json')) {
+            else if (hasBuffer() && Buffer.isBuffer(opts.data)) {
+                // Do not attempt to JSON.stringify() a Buffer:
+                opts.body = opts.data;
+                if (!hasHeader(opts, 'Content-Type')) {
                     opts.headers['Content-Type'] = 'application/json';
+                }
+            }
+            else if (typeof opts.data === 'object') {
+                // If www-form-urlencoded content type has been set, but data is
+                // provided as an object, serialize the content using querystring:
+                if (getHeader(opts, 'content-type') ===
+                    'application/x-www-form-urlencoded') {
+                    opts.body = opts.paramsSerializer(opts.data);
+                }
+                else {
+                    if (!hasHeader(opts, 'Content-Type')) {
+                        opts.headers['Content-Type'] = 'application/json';
+                    }
+                    opts.body = JSON.stringify(opts.data);
                 }
             }
             else {
@@ -37514,14 +38904,40 @@ class Gaxios {
             opts.headers['Accept'] = 'application/json';
         }
         opts.method = opts.method || 'GET';
-        const proxy = loadProxy();
+        const proxy = getProxy(opts.url);
         if (proxy) {
             if (this.agentCache.has(proxy)) {
                 opts.agent = this.agentCache.get(proxy);
             }
             else {
-                opts.agent = new HttpsProxyAgent(proxy);
+                // Proxy is being used in conjunction with mTLS.
+                if (opts.cert && opts.key) {
+                    const parsedURL = new url_1.URL(proxy);
+                    opts.agent = new HttpsProxyAgent({
+                        port: parsedURL.port,
+                        host: parsedURL.host,
+                        protocol: parsedURL.protocol,
+                        cert: opts.cert,
+                        key: opts.key,
+                    });
+                }
+                else {
+                    opts.agent = new HttpsProxyAgent(proxy);
+                }
                 this.agentCache.set(proxy, opts.agent);
+            }
+        }
+        else if (opts.cert && opts.key) {
+            // Configure client for mTLS:
+            if (this.agentCache.has(opts.key)) {
+                opts.agent = this.agentCache.get(opts.key);
+            }
+            else {
+                opts.agent = new https_1.Agent({
+                    cert: opts.cert,
+                    key: opts.key,
+                });
+                this.agentCache.set(opts.key, opts.agent);
             }
         }
         return opts;
@@ -37590,6 +39006,7 @@ module.exports = require("url");
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.UserRefreshClient = void 0;
 const oauth2client_1 = __webpack_require__(449);
 class UserRefreshClient extends oauth2client_1.OAuth2Client {
     constructor(optionsOrClientId, clientSecret, refreshToken, eagerRefreshThresholdMillis, forceRefreshOnFailure) {
@@ -37616,7 +39033,9 @@ class UserRefreshClient extends oauth2client_1.OAuth2Client {
      * @param refreshToken An ignored refreshToken..
      * @param callback Optional callback.
      */
-    async refreshTokenNoCache(refreshToken) {
+    async refreshTokenNoCache(
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    refreshToken) {
         return super.refreshTokenNoCache(this._refreshToken);
     }
     /**
@@ -37648,7 +39067,7 @@ class UserRefreshClient extends oauth2client_1.OAuth2Client {
     }
     fromStream(inputStream, callback) {
         if (callback) {
-            this.fromStreamAsync(inputStream).then(r => callback(), callback);
+            this.fromStreamAsync(inputStream).then(() => callback(), callback);
         }
         else {
             return this.fromStreamAsync(inputStream);
@@ -38719,7 +40138,7 @@ forge.task.createCondition = function() {
 /***/ }),
 
 /***/ 866:
-/***/ (function(__unusedmodule, exports, __webpack_require__) {
+/***/ (function(__unusedmodule, exports) {
 
 "use strict";
 
@@ -38737,7 +40156,7 @@ forge.task.createCondition = function() {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
-const messages = __webpack_require__(352);
+exports.IAMAuth = void 0;
 class IAMAuth {
     /**
      * IAM credentials.
@@ -38751,28 +40170,6 @@ class IAMAuth {
         this.token = token;
         this.selector = selector;
         this.token = token;
-    }
-    /**
-     * Indicates whether the credential requires scopes to be created by calling
-     * createdScoped before use.
-     * @deprecated
-     * @return always false
-     */
-    createScopedRequired() {
-        // IAM authorization does not use scopes.
-        messages.warn(messages.IAM_CREATE_SCOPED_DEPRECATED);
-        return false;
-    }
-    /**
-     * Pass the selector and token to the metadataFn callback.
-     * @deprecated
-     * @param unused_uri is required of the credentials interface
-     * @param metadataFn a callback invoked with object containing request
-     * metadata.
-     */
-    getRequestMetadata(unusedUri, metadataFn) {
-        messages.warn(messages.IAM_GET_REQUEST_METADATA_DEPRECATED);
-        metadataFn(null, this.getRequestHeaders());
     }
     /**
      * Acquire the HTTP headers required to make an authenticated request.
@@ -38815,11 +40212,12 @@ module.exports = require("tty");
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.validate = void 0;
 // Accepts an options object passed from the user to the API.  In the
 // previous version of the API, it referred to a `Request` options object.
 // Now it refers to an Axiox Request Config object.  This is here to help
 // ensure users don't pass invalid options when they upgrade from 0.x to 1.x.
-// tslint:disable-next-line no-any
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function validate(options) {
     const vpairs = [
         { invalid: 'uri', expected: 'url' },
@@ -39525,6 +40923,189 @@ function _sha1() {
 
 /***/ }),
 
+/***/ 937:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.getErrorFromOAuthErrorResponse = exports.OAuthClientAuthHandler = void 0;
+const querystring = __webpack_require__(191);
+const crypto_1 = __webpack_require__(984);
+/** List of HTTP methods that accept request bodies. */
+const METHODS_SUPPORTING_REQUEST_BODY = ['PUT', 'POST', 'PATCH'];
+/**
+ * Abstract class for handling client authentication in OAuth-based
+ * operations.
+ * When request-body client authentication is used, only application/json and
+ * application/x-www-form-urlencoded content types for HTTP methods that support
+ * request bodies are supported.
+ */
+class OAuthClientAuthHandler {
+    /**
+     * Instantiates an OAuth client authentication handler.
+     * @param clientAuthentication The client auth credentials.
+     */
+    constructor(clientAuthentication) {
+        this.clientAuthentication = clientAuthentication;
+        this.crypto = crypto_1.createCrypto();
+    }
+    /**
+     * Applies client authentication on the OAuth request's headers or POST
+     * body but does not process the request.
+     * @param opts The GaxiosOptions whose headers or data are to be modified
+     *   depending on the client authentication mechanism to be used.
+     * @param bearerToken The optional bearer token to use for authentication.
+     *   When this is used, no client authentication credentials are needed.
+     */
+    applyClientAuthenticationOptions(opts, bearerToken) {
+        // Inject authenticated header.
+        this.injectAuthenticatedHeaders(opts, bearerToken);
+        // Inject authenticated request body.
+        if (!bearerToken) {
+            this.injectAuthenticatedRequestBody(opts);
+        }
+    }
+    /**
+     * Applies client authentication on the request's header if either
+     * basic authentication or bearer token authentication is selected.
+     *
+     * @param opts The GaxiosOptions whose headers or data are to be modified
+     *   depending on the client authentication mechanism to be used.
+     * @param bearerToken The optional bearer token to use for authentication.
+     *   When this is used, no client authentication credentials are needed.
+     */
+    injectAuthenticatedHeaders(opts, bearerToken) {
+        var _a;
+        // Bearer token prioritized higher than basic Auth.
+        if (bearerToken) {
+            opts.headers = opts.headers || {};
+            Object.assign(opts.headers, {
+                Authorization: `Bearer ${bearerToken}}`,
+            });
+        }
+        else if (((_a = this.clientAuthentication) === null || _a === void 0 ? void 0 : _a.confidentialClientType) === 'basic') {
+            opts.headers = opts.headers || {};
+            const clientId = this.clientAuthentication.clientId;
+            const clientSecret = this.clientAuthentication.clientSecret || '';
+            const base64EncodedCreds = this.crypto.encodeBase64StringUtf8(`${clientId}:${clientSecret}`);
+            Object.assign(opts.headers, {
+                Authorization: `Basic ${base64EncodedCreds}`,
+            });
+        }
+    }
+    /**
+     * Applies client authentication on the request's body if request-body
+     * client authentication is selected.
+     *
+     * @param opts The GaxiosOptions whose headers or data are to be modified
+     *   depending on the client authentication mechanism to be used.
+     */
+    injectAuthenticatedRequestBody(opts) {
+        var _a;
+        if (((_a = this.clientAuthentication) === null || _a === void 0 ? void 0 : _a.confidentialClientType) === 'request-body') {
+            const method = (opts.method || 'GET').toUpperCase();
+            // Inject authenticated request body.
+            if (METHODS_SUPPORTING_REQUEST_BODY.indexOf(method) !== -1) {
+                // Get content-type.
+                let contentType;
+                const headers = opts.headers || {};
+                for (const key in headers) {
+                    if (key.toLowerCase() === 'content-type' && headers[key]) {
+                        contentType = headers[key].toLowerCase();
+                        break;
+                    }
+                }
+                if (contentType === 'application/x-www-form-urlencoded') {
+                    opts.data = opts.data || '';
+                    const data = querystring.parse(opts.data);
+                    Object.assign(data, {
+                        client_id: this.clientAuthentication.clientId,
+                        client_secret: this.clientAuthentication.clientSecret || '',
+                    });
+                    opts.data = querystring.stringify(data);
+                }
+                else if (contentType === 'application/json') {
+                    opts.data = opts.data || {};
+                    Object.assign(opts.data, {
+                        client_id: this.clientAuthentication.clientId,
+                        client_secret: this.clientAuthentication.clientSecret || '',
+                    });
+                }
+                else {
+                    throw new Error(`${contentType} content-types are not supported with ` +
+                        `${this.clientAuthentication.confidentialClientType} ` +
+                        'client authentication');
+                }
+            }
+            else {
+                throw new Error(`${method} HTTP method does not support ` +
+                    `${this.clientAuthentication.confidentialClientType} ` +
+                    'client authentication');
+            }
+        }
+    }
+}
+exports.OAuthClientAuthHandler = OAuthClientAuthHandler;
+/**
+ * Converts an OAuth error response to a native JavaScript Error.
+ * @param resp The OAuth error response to convert to a native Error object.
+ * @param err The optional original error. If provided, the error properties
+ *   will be copied to the new error.
+ * @return The converted native Error object.
+ */
+function getErrorFromOAuthErrorResponse(resp, err) {
+    // Error response.
+    const errorCode = resp.error;
+    const errorDescription = resp.error_description;
+    const errorUri = resp.error_uri;
+    let message = `Error code ${errorCode}`;
+    if (typeof errorDescription !== 'undefined') {
+        message += `: ${errorDescription}`;
+    }
+    if (typeof errorUri !== 'undefined') {
+        message += ` - ${errorUri}`;
+    }
+    const newError = new Error(message);
+    // Copy properties from original error to newly generated error.
+    if (err) {
+        const keys = Object.keys(err);
+        if (err.stack) {
+            // Copy error.stack if available.
+            keys.push('stack');
+        }
+        keys.forEach(key => {
+            // Do not overwrite the message field.
+            if (key !== 'message') {
+                Object.defineProperty(newError, key, {
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    value: err[key],
+                    writable: false,
+                    enumerable: true,
+                });
+            }
+        });
+    }
+    return newError;
+}
+exports.getErrorFromOAuthErrorResponse = getErrorFromOAuthErrorResponse;
+//# sourceMappingURL=oauth2common.js.map
+
+/***/ }),
+
 /***/ 938:
 /***/ (function(__unusedmodule, exports, __webpack_require__) {
 
@@ -39537,6 +41118,7 @@ function _sha1() {
  * See file LICENSE for detail or copy at https://opensource.org/licenses/MIT
  */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.getPem = void 0;
 const fs = __webpack_require__(747);
 const forge = __webpack_require__(285);
 const util_1 = __webpack_require__(669);
@@ -39583,7 +41165,7 @@ function convertToPem(p12base64) {
 /***/ 947:
 /***/ (function(module) {
 
-module.exports = {"_args":[["google-auth-library@5.10.1","/home/runner/work/get-secretmanager-secrets/get-secretmanager-secrets"]],"_from":"google-auth-library@5.10.1","_id":"google-auth-library@5.10.1","_inBundle":false,"_integrity":"sha512-rOlaok5vlpV9rSiUu5EpR0vVpc+PhN62oF4RyX/6++DG1VsaulAFEMlDYBLjJDDPI6OcNOCGAKy9UVB/3NIDXg==","_location":"/google-auth-library","_phantomChildren":{},"_requested":{"type":"version","registry":true,"raw":"google-auth-library@5.10.1","name":"google-auth-library","escapedName":"google-auth-library","rawSpec":"5.10.1","saveSpec":null,"fetchSpec":"5.10.1"},"_requiredBy":["/"],"_resolved":"https://registry.npmjs.org/google-auth-library/-/google-auth-library-5.10.1.tgz","_spec":"5.10.1","_where":"/home/runner/work/get-secretmanager-secrets/get-secretmanager-secrets","author":{"name":"Google Inc."},"bugs":{"url":"https://github.com/googleapis/google-auth-library-nodejs/issues"},"dependencies":{"arrify":"^2.0.0","base64-js":"^1.3.0","ecdsa-sig-formatter":"^1.0.11","fast-text-encoding":"^1.0.0","gaxios":"^2.1.0","gcp-metadata":"^3.4.0","gtoken":"^4.1.0","jws":"^4.0.0","lru-cache":"^5.0.0"},"description":"Google APIs Authentication Client Library for Node.js","devDependencies":{"@compodoc/compodoc":"^1.1.7","@types/base64-js":"^1.2.5","@types/chai":"^4.1.7","@types/jws":"^3.1.0","@types/lru-cache":"^5.0.0","@types/mocha":"^7.0.0","@types/mv":"^2.1.0","@types/ncp":"^2.0.1","@types/node":"^10.5.1","@types/sinon":"^7.0.0","@types/tmp":"^0.1.0","assert-rejects":"^1.0.0","c8":"^7.0.0","chai":"^4.2.0","codecov":"^3.0.2","eslint":"^6.0.0","eslint-config-prettier":"^6.0.0","eslint-plugin-node":"^11.0.0","eslint-plugin-prettier":"^3.0.0","execa":"^4.0.0","gts":"^1.1.2","is-docker":"^2.0.0","js-green-licenses":"^1.0.0","karma":"^4.0.0","karma-chrome-launcher":"^3.0.0","karma-coverage":"^2.0.0","karma-firefox-launcher":"^1.1.0","karma-mocha":"^1.3.0","karma-remap-coverage":"^0.1.5","karma-sourcemap-loader":"^0.3.7","karma-webpack":"^4.0.0","keypair":"^1.0.1","linkinator":"^2.0.0","mocha":"^7.0.0","mv":"^2.1.1","ncp":"^2.0.0","nock":"^12.0.0","null-loader":"^3.0.0","prettier":"^1.13.4","puppeteer":"^2.0.0","sinon":"^9.0.0","tmp":"^0.1.0","ts-loader":"^6.0.0","typescript":"3.6.4","webpack":"^4.20.2","webpack-cli":"^3.1.1"},"engines":{"node":">=8.10.0"},"files":["build/src","!build/src/**/*.map"],"homepage":"https://github.com/googleapis/google-auth-library-nodejs#readme","keywords":["google","api","google apis","client","client library"],"license":"Apache-2.0","main":"./build/src/index.js","name":"google-auth-library","repository":{"type":"git","url":"git+https://github.com/googleapis/google-auth-library-nodejs.git"},"scripts":{"browser-test":"karma start","clean":"gts clean","compile":"tsc -p .","docs":"compodoc src/","docs-test":"linkinator docs","fix":"gts fix && eslint --fix '**/*.js'","license-check":"jsgl --local .","lint":"gts check && eslint '**/*.js' && jsgl --local .","predocs-test":"npm run docs","prelint":"cd samples; npm link ../; npm i","prepare":"npm run compile","presystem-test":"npm run compile","pretest":"npm run compile","samples-test":"cd samples/ && npm link ../ && npm test && cd ../","system-test":"mocha build/system-test --timeout 60000","test":"c8 mocha build/test","webpack":"webpack"},"types":"./build/src/index.d.ts","version":"5.10.1"};
+module.exports = {"name":"google-auth-library","version":"7.3.0","author":"Google Inc.","description":"Google APIs Authentication Client Library for Node.js","engines":{"node":">=10"},"main":"./build/src/index.js","types":"./build/src/index.d.ts","repository":"googleapis/google-auth-library-nodejs.git","keywords":["google","api","google apis","client","client library"],"dependencies":{"arrify":"^2.0.0","base64-js":"^1.3.0","ecdsa-sig-formatter":"^1.0.11","fast-text-encoding":"^1.0.0","gaxios":"^4.0.0","gcp-metadata":"^4.2.0","gtoken":"^5.0.4","jws":"^4.0.0","lru-cache":"^6.0.0"},"devDependencies":{"@compodoc/compodoc":"^1.1.7","@types/base64-js":"^1.2.5","@types/chai":"^4.1.7","@types/jws":"^3.1.0","@types/lru-cache":"^5.0.0","@types/mocha":"^8.0.0","@types/mv":"^2.1.0","@types/ncp":"^2.0.1","@types/node":"^14.0.0","@types/sinon":"^10.0.0","@types/tmp":"^0.2.0","assert-rejects":"^1.0.0","c8":"^7.0.0","chai":"^4.2.0","codecov":"^3.0.2","execa":"^5.0.0","gts":"^2.0.0","is-docker":"^2.0.0","karma":"^6.0.0","karma-chrome-launcher":"^3.0.0","karma-coverage":"^2.0.0","karma-firefox-launcher":"^2.0.0","karma-mocha":"^2.0.0","karma-remap-coverage":"^0.1.5","karma-sourcemap-loader":"^0.3.7","karma-webpack":"^5.0.0","keypair":"^1.0.1","linkinator":"^2.0.0","mocha":"^8.0.0","mv":"^2.1.1","ncp":"^2.0.0","nock":"^13.0.0","null-loader":"^4.0.0","puppeteer":"^10.0.0","sinon":"^11.0.0","tmp":"^0.2.0","ts-loader":"^8.0.0","typescript":"^3.8.3","webpack":"^5.21.2","webpack-cli":"^4.0.0"},"files":["build/src","!build/src/**/*.map"],"scripts":{"test":"c8 mocha build/test","clean":"gts clean","prepare":"npm run compile","lint":"gts check","compile":"tsc -p .","fix":"gts fix","pretest":"npm run compile","docs":"compodoc src/","samples-setup":"cd samples/ && npm link ../ && npm run setup && cd ../","samples-test":"cd samples/ && npm link ../ && npm test && cd ../","system-test":"mocha build/system-test --timeout 60000","presystem-test":"npm run compile","webpack":"webpack","browser-test":"karma start","docs-test":"linkinator docs","predocs-test":"npm run docs","prelint":"cd samples; npm link ../; npm install","precompile":"gts clean"},"license":"Apache-2.0","_resolved":"https://registry.npmjs.org/google-auth-library/-/google-auth-library-7.3.0.tgz","_integrity":"sha512-MPeeMlnsYnoiiVFMwX3hgaS684aiXrSqKoDP+xL4Ejg4Z0qLvIeg4XsaChemyFI8ZUO7ApwDAzNtgmhWSDNh5w==","_from":"google-auth-library@7.3.0"};
 
 /***/ }),
 
@@ -39606,19 +41188,21 @@ module.exports = {"_args":[["google-auth-library@5.10.1","/home/runner/work/get-
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.GoogleAuth = exports.CLOUD_SDK_CLIENT_ID = void 0;
 const child_process_1 = __webpack_require__(129);
 const fs = __webpack_require__(747);
 const gcpMetadata = __webpack_require__(479);
 const os = __webpack_require__(87);
 const path = __webpack_require__(622);
 const crypto_1 = __webpack_require__(984);
-const messages = __webpack_require__(352);
 const transporters_1 = __webpack_require__(974);
 const computeclient_1 = __webpack_require__(310);
 const idtokenclient_1 = __webpack_require__(331);
 const envDetect_1 = __webpack_require__(813);
 const jwtclient_1 = __webpack_require__(484);
 const refreshclient_1 = __webpack_require__(846);
+const externalclient_1 = __webpack_require__(992);
+const baseexternalclient_1 = __webpack_require__(48);
 exports.CLOUD_SDK_CLIENT_ID = '764086051850-6qr4p6gpi6hn506pt8ejuq83di341hur.apps.googleusercontent.com';
 class GoogleAuth {
     constructor(opts) {
@@ -39643,14 +41227,13 @@ class GoogleAuth {
     get isGCE() {
         return this.checkIsGCE;
     }
-    getDefaultProjectId(callback) {
-        messages.warn(messages.DEFAULT_PROJECT_ID_DEPRECATED);
-        if (callback) {
-            this.getProjectIdAsync().then(r => callback(null, r), callback);
-        }
-        else {
-            return this.getProjectIdAsync();
-        }
+    // GAPIC client libraries should always use self-signed JWTs. The following
+    // variables are set on the JWT client in order to indicate the type of library,
+    // and sign the JWT with the correct audience and scopes (if not supplied).
+    setGapicJWTValues(client) {
+        client.defaultServicePath = this.defaultServicePath;
+        client.useJWTAccessAlways = this.useJWTAccessAlways;
+        client.defaultScopes = this.defaultScopes;
     }
     getProjectId(callback) {
         if (callback) {
@@ -39671,12 +41254,17 @@ class GoogleAuth {
         // - Cloud SDK: `gcloud config config-helper --format json`
         // - GCE project ID from metadata server)
         if (!this._getDefaultProjectIdPromise) {
-            this._getDefaultProjectIdPromise = new Promise(async (resolve, reject) => {
+            // TODO: refactor the below code so that it doesn't mix and match
+            // promises and async/await.
+            this._getDefaultProjectIdPromise = new Promise(
+            // eslint-disable-next-line no-async-promise-executor
+            async (resolve, reject) => {
                 try {
                     const projectId = this.getProductionProjectId() ||
                         (await this.getFileProjectId()) ||
                         (await this.getDefaultServiceProjectId()) ||
-                        (await this.getGCEProjectId());
+                        (await this.getGCEProjectId()) ||
+                        (await this.getExternalAccountClientProjectId());
                     this._cachedProjectId = projectId;
                     if (!projectId) {
                         throw new Error('Unable to detect a Project Id in the current environment. \n' +
@@ -39691,6 +41279,13 @@ class GoogleAuth {
             });
         }
         return this._getDefaultProjectIdPromise;
+    }
+    /**
+     * @returns Any scopes (user-specified or default scopes specified by the
+     *   client library) that need to be set on the current Auth client.
+     */
+    getAnyScopes() {
+        return this.scopes || this.defaultScopes;
     }
     getApplicationDefault(optionsOrCallback = {}, callback) {
         let options;
@@ -39720,10 +41315,14 @@ class GoogleAuth {
         // Check for the existence of a local environment variable pointing to the
         // location of the credential file. This is typically used in local
         // developer scenarios.
-        credential = await this._tryGetApplicationCredentialsFromEnvironmentVariable(options);
+        credential =
+            await this._tryGetApplicationCredentialsFromEnvironmentVariable(options);
         if (credential) {
             if (credential instanceof jwtclient_1.JWT) {
                 credential.scopes = this.scopes;
+            }
+            else if (credential instanceof baseexternalclient_1.BaseExternalAccountClient) {
+                credential.scopes = this.getAnyScopes();
             }
             this.cachedCredential = credential;
             projectId = await this.getProjectId();
@@ -39734,6 +41333,9 @@ class GoogleAuth {
         if (credential) {
             if (credential instanceof jwtclient_1.JWT) {
                 credential.scopes = this.scopes;
+            }
+            else if (credential instanceof baseexternalclient_1.BaseExternalAccountClient) {
+                credential.scopes = this.getAnyScopes();
             }
             this.cachedCredential = credential;
             projectId = await this.getProjectId();
@@ -39754,7 +41356,7 @@ class GoogleAuth {
         }
         // For GCE, just return a default ComputeClient. It will take care of
         // the rest.
-        options.scopes = this.scopes;
+        options.scopes = this.getAnyScopes();
         this.cachedCredential = new computeclient_1.Compute(options);
         projectId = await this.getProjectId();
         return { projectId, credential: this.cachedCredential };
@@ -39821,7 +41423,6 @@ class GoogleAuth {
         }
         // The file seems to exist. Try to use it.
         const client = await this._getApplicationCredentialsFromFilePath(location, options);
-        this.warnOnProblematicCredentials(client);
         return client;
     }
     /**
@@ -39854,16 +41455,6 @@ class GoogleAuth {
         return this.fromStream(readStream, options);
     }
     /**
-     * Credentials from the Cloud SDK that are associated with Cloud SDK's project
-     * are problematic because they may not have APIs enabled and have limited
-     * quota. If this is the case, warn about it.
-     */
-    warnOnProblematicCredentials(client) {
-        if (client.email === exports.CLOUD_SDK_CLIENT_ID) {
-            messages.warn(messages.PROBLEMATIC_CREDENTIALS_WARNING);
-        }
-    }
-    /**
      * Create a credentials instance using the given input options.
      * @param json The input object.
      * @param options The JWT or UserRefresh options for the client
@@ -39877,12 +41468,18 @@ class GoogleAuth {
         options = options || {};
         if (json.type === 'authorized_user') {
             client = new refreshclient_1.UserRefreshClient(options);
+            client.fromJSON(json);
+        }
+        else if (json.type === baseexternalclient_1.EXTERNAL_ACCOUNT_TYPE) {
+            client = externalclient_1.ExternalAccountClient.fromJSON(json, options);
+            client.scopes = this.getAnyScopes();
         }
         else {
             options.scopes = this.scopes;
             client = new jwtclient_1.JWT(options);
+            this.setGapicJWTValues(client);
+            client.fromJSON(json);
         }
-        client.fromJSON(json);
         return client;
     }
     /**
@@ -39898,12 +41495,18 @@ class GoogleAuth {
         options = options || {};
         if (json.type === 'authorized_user') {
             client = new refreshclient_1.UserRefreshClient(options);
+            client.fromJSON(json);
+        }
+        else if (json.type === baseexternalclient_1.EXTERNAL_ACCOUNT_TYPE) {
+            client = externalclient_1.ExternalAccountClient.fromJSON(json, options);
+            client.scopes = this.getAnyScopes();
         }
         else {
             options.scopes = this.scopes;
             client = new jwtclient_1.JWT(options);
+            this.setGapicJWTValues(client);
+            client.fromJSON(json);
         }
-        client.fromJSON(json);
         // cache both raw data used to instantiate client and client itself.
         this.jsonContent = json;
         this.cachedCredential = client;
@@ -39936,9 +41539,24 @@ class GoogleAuth {
                 .on('data', chunk => (s += chunk))
                 .on('end', () => {
                 try {
-                    const data = JSON.parse(s);
-                    const r = this._cacheClientFromJSON(data, options);
-                    return resolve(r);
+                    try {
+                        const data = JSON.parse(s);
+                        const r = this._cacheClientFromJSON(data, options);
+                        return resolve(r);
+                    }
+                    catch (err) {
+                        // If we failed parsing this.keyFileName, assume that it
+                        // is a PEM or p12 certificate:
+                        if (!this.keyFilename)
+                            throw err;
+                        const client = new jwtclient_1.JWT({
+                            ...this.clientOptions,
+                            keyFile: this.keyFilename,
+                        });
+                        this.cachedCredential = client;
+                        this.setGapicJWTValues(client);
+                        return resolve(client);
+                    }
                 }
                 catch (err) {
                     return reject(err);
@@ -39976,11 +41594,10 @@ class GoogleAuth {
      */
     async getDefaultServiceProjectId() {
         return new Promise(resolve => {
-            child_process_1.exec('gcloud config config-helper --format json', (err, stdout, stderr) => {
+            child_process_1.exec('gcloud config config-helper --format json', (err, stdout) => {
                 if (!err && stdout) {
                     try {
-                        const projectId = JSON.parse(stdout).configuration.properties.core
-                            .project;
+                        const projectId = JSON.parse(stdout).configuration.properties.core.project;
                         resolve(projectId);
                         return;
                     }
@@ -40026,6 +41643,27 @@ class GoogleAuth {
         else {
             return null;
         }
+    }
+    /**
+     * Gets the project ID from external account client if available.
+     */
+    async getExternalAccountClientProjectId() {
+        if (!this.jsonContent || this.jsonContent.type !== baseexternalclient_1.EXTERNAL_ACCOUNT_TYPE) {
+            return null;
+        }
+        const creds = await this.getClient();
+        // Do not suppress the underlying error, as the error could contain helpful
+        // information for debugging and fixing. This is especially true for
+        // external account creds as in order to get the project ID, the following
+        // operations have to succeed:
+        // 1. Valid credentials file should be supplied.
+        // 2. Ability to retrieve access tokens from STS token exchange API.
+        // 3. Ability to exchange for service account impersonated credentials (if
+        //    enabled).
+        // 4. Ability to get project info using the access token from step 2 or 3.
+        // Without surfacing the error, it is harder for developers to determine
+        // which step went wrong.
+        return await creds.getProjectId();
     }
     /**
      * Gets the Compute Engine project ID if it can be inferred.
@@ -40143,7 +41781,7 @@ class GoogleAuth {
      * HTTP request using the given options.
      * @param opts Axios request options for the HTTP request.
      */
-    // tslint:disable-next-line no-any
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async request(opts) {
         const client = await this.getClient();
         return client.request(opts);
@@ -40174,13 +41812,15 @@ class GoogleAuth {
         if (!creds.client_email) {
             throw new Error('Cannot sign data without `client_email`.');
         }
-        const id = `projects/${projectId}/serviceAccounts/${creds.client_email}`;
+        const url = `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${creds.client_email}:signBlob`;
         const res = await this.request({
             method: 'POST',
-            url: `https://iam.googleapis.com/v1/${id}:signBlob`,
-            data: { bytesToSign: crypto.encodeBase64StringUtf8(data) },
+            url,
+            data: {
+                payload: crypto.encodeBase64StringUtf8(data),
+            },
         });
-        return res.data.signature;
+        return res.data.signedBlob;
     }
 }
 exports.GoogleAuth = GoogleAuth;
@@ -41475,9 +43115,10 @@ function _decryptContent(msg) {
 // See the License for the specific language governing permissions and
 // limitations under the License.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DefaultTransporter = void 0;
 const gaxios_1 = __webpack_require__(597);
 const options_1 = __webpack_require__(882);
-// tslint:disable-next-line no-var-requires
+// eslint-disable-next-line @typescript-eslint/no-var-requires
 const pkg = __webpack_require__(947);
 const PRODUCT_NAME = 'google-api-nodejs-client';
 class DefaultTransporter {
@@ -41625,6 +43266,7 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
     });
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Client = void 0;
 const google_auth_library_1 = __webpack_require__(668);
 /**
  * Wraps interactions with the Google Secret Manager API, handling credential
@@ -41723,13 +43365,6 @@ exports.createVerify = function createVerify(opts) {
 
 /***/ }),
 
-/***/ 983:
-/***/ (function(module) {
-
-module.exports = {"application/prs.cww":["cww"],"application/vnd.3gpp.pic-bw-large":["plb"],"application/vnd.3gpp.pic-bw-small":["psb"],"application/vnd.3gpp.pic-bw-var":["pvb"],"application/vnd.3gpp2.tcap":["tcap"],"application/vnd.3m.post-it-notes":["pwn"],"application/vnd.accpac.simply.aso":["aso"],"application/vnd.accpac.simply.imp":["imp"],"application/vnd.acucobol":["acu"],"application/vnd.acucorp":["atc","acutc"],"application/vnd.adobe.air-application-installer-package+zip":["air"],"application/vnd.adobe.formscentral.fcdt":["fcdt"],"application/vnd.adobe.fxp":["fxp","fxpl"],"application/vnd.adobe.xdp+xml":["xdp"],"application/vnd.adobe.xfdf":["xfdf"],"application/vnd.ahead.space":["ahead"],"application/vnd.airzip.filesecure.azf":["azf"],"application/vnd.airzip.filesecure.azs":["azs"],"application/vnd.amazon.ebook":["azw"],"application/vnd.americandynamics.acc":["acc"],"application/vnd.amiga.ami":["ami"],"application/vnd.android.package-archive":["apk"],"application/vnd.anser-web-certificate-issue-initiation":["cii"],"application/vnd.anser-web-funds-transfer-initiation":["fti"],"application/vnd.antix.game-component":["atx"],"application/vnd.apple.installer+xml":["mpkg"],"application/vnd.apple.keynote":["keynote"],"application/vnd.apple.mpegurl":["m3u8"],"application/vnd.apple.numbers":["numbers"],"application/vnd.apple.pages":["pages"],"application/vnd.apple.pkpass":["pkpass"],"application/vnd.aristanetworks.swi":["swi"],"application/vnd.astraea-software.iota":["iota"],"application/vnd.audiograph":["aep"],"application/vnd.blueice.multipass":["mpm"],"application/vnd.bmi":["bmi"],"application/vnd.businessobjects":["rep"],"application/vnd.chemdraw+xml":["cdxml"],"application/vnd.chipnuts.karaoke-mmd":["mmd"],"application/vnd.cinderella":["cdy"],"application/vnd.citationstyles.style+xml":["csl"],"application/vnd.claymore":["cla"],"application/vnd.cloanto.rp9":["rp9"],"application/vnd.clonk.c4group":["c4g","c4d","c4f","c4p","c4u"],"application/vnd.cluetrust.cartomobile-config":["c11amc"],"application/vnd.cluetrust.cartomobile-config-pkg":["c11amz"],"application/vnd.commonspace":["csp"],"application/vnd.contact.cmsg":["cdbcmsg"],"application/vnd.cosmocaller":["cmc"],"application/vnd.crick.clicker":["clkx"],"application/vnd.crick.clicker.keyboard":["clkk"],"application/vnd.crick.clicker.palette":["clkp"],"application/vnd.crick.clicker.template":["clkt"],"application/vnd.crick.clicker.wordbank":["clkw"],"application/vnd.criticaltools.wbs+xml":["wbs"],"application/vnd.ctc-posml":["pml"],"application/vnd.cups-ppd":["ppd"],"application/vnd.curl.car":["car"],"application/vnd.curl.pcurl":["pcurl"],"application/vnd.dart":["dart"],"application/vnd.data-vision.rdz":["rdz"],"application/vnd.dece.data":["uvf","uvvf","uvd","uvvd"],"application/vnd.dece.ttml+xml":["uvt","uvvt"],"application/vnd.dece.unspecified":["uvx","uvvx"],"application/vnd.dece.zip":["uvz","uvvz"],"application/vnd.denovo.fcselayout-link":["fe_launch"],"application/vnd.dna":["dna"],"application/vnd.dolby.mlp":["mlp"],"application/vnd.dpgraph":["dpg"],"application/vnd.dreamfactory":["dfac"],"application/vnd.ds-keypoint":["kpxx"],"application/vnd.dvb.ait":["ait"],"application/vnd.dvb.service":["svc"],"application/vnd.dynageo":["geo"],"application/vnd.ecowin.chart":["mag"],"application/vnd.enliven":["nml"],"application/vnd.epson.esf":["esf"],"application/vnd.epson.msf":["msf"],"application/vnd.epson.quickanime":["qam"],"application/vnd.epson.salt":["slt"],"application/vnd.epson.ssf":["ssf"],"application/vnd.eszigno3+xml":["es3","et3"],"application/vnd.ezpix-album":["ez2"],"application/vnd.ezpix-package":["ez3"],"application/vnd.fdf":["fdf"],"application/vnd.fdsn.mseed":["mseed"],"application/vnd.fdsn.seed":["seed","dataless"],"application/vnd.flographit":["gph"],"application/vnd.fluxtime.clip":["ftc"],"application/vnd.framemaker":["fm","frame","maker","book"],"application/vnd.frogans.fnc":["fnc"],"application/vnd.frogans.ltf":["ltf"],"application/vnd.fsc.weblaunch":["fsc"],"application/vnd.fujitsu.oasys":["oas"],"application/vnd.fujitsu.oasys2":["oa2"],"application/vnd.fujitsu.oasys3":["oa3"],"application/vnd.fujitsu.oasysgp":["fg5"],"application/vnd.fujitsu.oasysprs":["bh2"],"application/vnd.fujixerox.ddd":["ddd"],"application/vnd.fujixerox.docuworks":["xdw"],"application/vnd.fujixerox.docuworks.binder":["xbd"],"application/vnd.fuzzysheet":["fzs"],"application/vnd.genomatix.tuxedo":["txd"],"application/vnd.geogebra.file":["ggb"],"application/vnd.geogebra.tool":["ggt"],"application/vnd.geometry-explorer":["gex","gre"],"application/vnd.geonext":["gxt"],"application/vnd.geoplan":["g2w"],"application/vnd.geospace":["g3w"],"application/vnd.gmx":["gmx"],"application/vnd.google-apps.document":["gdoc"],"application/vnd.google-apps.presentation":["gslides"],"application/vnd.google-apps.spreadsheet":["gsheet"],"application/vnd.google-earth.kml+xml":["kml"],"application/vnd.google-earth.kmz":["kmz"],"application/vnd.grafeq":["gqf","gqs"],"application/vnd.groove-account":["gac"],"application/vnd.groove-help":["ghf"],"application/vnd.groove-identity-message":["gim"],"application/vnd.groove-injector":["grv"],"application/vnd.groove-tool-message":["gtm"],"application/vnd.groove-tool-template":["tpl"],"application/vnd.groove-vcard":["vcg"],"application/vnd.hal+xml":["hal"],"application/vnd.handheld-entertainment+xml":["zmm"],"application/vnd.hbci":["hbci"],"application/vnd.hhe.lesson-player":["les"],"application/vnd.hp-hpgl":["hpgl"],"application/vnd.hp-hpid":["hpid"],"application/vnd.hp-hps":["hps"],"application/vnd.hp-jlyt":["jlt"],"application/vnd.hp-pcl":["pcl"],"application/vnd.hp-pclxl":["pclxl"],"application/vnd.hydrostatix.sof-data":["sfd-hdstx"],"application/vnd.ibm.minipay":["mpy"],"application/vnd.ibm.modcap":["afp","listafp","list3820"],"application/vnd.ibm.rights-management":["irm"],"application/vnd.ibm.secure-container":["sc"],"application/vnd.iccprofile":["icc","icm"],"application/vnd.igloader":["igl"],"application/vnd.immervision-ivp":["ivp"],"application/vnd.immervision-ivu":["ivu"],"application/vnd.insors.igm":["igm"],"application/vnd.intercon.formnet":["xpw","xpx"],"application/vnd.intergeo":["i2g"],"application/vnd.intu.qbo":["qbo"],"application/vnd.intu.qfx":["qfx"],"application/vnd.ipunplugged.rcprofile":["rcprofile"],"application/vnd.irepository.package+xml":["irp"],"application/vnd.is-xpr":["xpr"],"application/vnd.isac.fcs":["fcs"],"application/vnd.jam":["jam"],"application/vnd.jcp.javame.midlet-rms":["rms"],"application/vnd.jisp":["jisp"],"application/vnd.joost.joda-archive":["joda"],"application/vnd.kahootz":["ktz","ktr"],"application/vnd.kde.karbon":["karbon"],"application/vnd.kde.kchart":["chrt"],"application/vnd.kde.kformula":["kfo"],"application/vnd.kde.kivio":["flw"],"application/vnd.kde.kontour":["kon"],"application/vnd.kde.kpresenter":["kpr","kpt"],"application/vnd.kde.kspread":["ksp"],"application/vnd.kde.kword":["kwd","kwt"],"application/vnd.kenameaapp":["htke"],"application/vnd.kidspiration":["kia"],"application/vnd.kinar":["kne","knp"],"application/vnd.koan":["skp","skd","skt","skm"],"application/vnd.kodak-descriptor":["sse"],"application/vnd.las.las+xml":["lasxml"],"application/vnd.llamagraphics.life-balance.desktop":["lbd"],"application/vnd.llamagraphics.life-balance.exchange+xml":["lbe"],"application/vnd.lotus-1-2-3":["123"],"application/vnd.lotus-approach":["apr"],"application/vnd.lotus-freelance":["pre"],"application/vnd.lotus-notes":["nsf"],"application/vnd.lotus-organizer":["org"],"application/vnd.lotus-screencam":["scm"],"application/vnd.lotus-wordpro":["lwp"],"application/vnd.macports.portpkg":["portpkg"],"application/vnd.mcd":["mcd"],"application/vnd.medcalcdata":["mc1"],"application/vnd.mediastation.cdkey":["cdkey"],"application/vnd.mfer":["mwf"],"application/vnd.mfmp":["mfm"],"application/vnd.micrografx.flo":["flo"],"application/vnd.micrografx.igx":["igx"],"application/vnd.mif":["mif"],"application/vnd.mobius.daf":["daf"],"application/vnd.mobius.dis":["dis"],"application/vnd.mobius.mbk":["mbk"],"application/vnd.mobius.mqy":["mqy"],"application/vnd.mobius.msl":["msl"],"application/vnd.mobius.plc":["plc"],"application/vnd.mobius.txf":["txf"],"application/vnd.mophun.application":["mpn"],"application/vnd.mophun.certificate":["mpc"],"application/vnd.mozilla.xul+xml":["xul"],"application/vnd.ms-artgalry":["cil"],"application/vnd.ms-cab-compressed":["cab"],"application/vnd.ms-excel":["xls","xlm","xla","xlc","xlt","xlw"],"application/vnd.ms-excel.addin.macroenabled.12":["xlam"],"application/vnd.ms-excel.sheet.binary.macroenabled.12":["xlsb"],"application/vnd.ms-excel.sheet.macroenabled.12":["xlsm"],"application/vnd.ms-excel.template.macroenabled.12":["xltm"],"application/vnd.ms-fontobject":["eot"],"application/vnd.ms-htmlhelp":["chm"],"application/vnd.ms-ims":["ims"],"application/vnd.ms-lrm":["lrm"],"application/vnd.ms-officetheme":["thmx"],"application/vnd.ms-outlook":["msg"],"application/vnd.ms-pki.seccat":["cat"],"application/vnd.ms-pki.stl":["*stl"],"application/vnd.ms-powerpoint":["ppt","pps","pot"],"application/vnd.ms-powerpoint.addin.macroenabled.12":["ppam"],"application/vnd.ms-powerpoint.presentation.macroenabled.12":["pptm"],"application/vnd.ms-powerpoint.slide.macroenabled.12":["sldm"],"application/vnd.ms-powerpoint.slideshow.macroenabled.12":["ppsm"],"application/vnd.ms-powerpoint.template.macroenabled.12":["potm"],"application/vnd.ms-project":["mpp","mpt"],"application/vnd.ms-word.document.macroenabled.12":["docm"],"application/vnd.ms-word.template.macroenabled.12":["dotm"],"application/vnd.ms-works":["wps","wks","wcm","wdb"],"application/vnd.ms-wpl":["wpl"],"application/vnd.ms-xpsdocument":["xps"],"application/vnd.mseq":["mseq"],"application/vnd.musician":["mus"],"application/vnd.muvee.style":["msty"],"application/vnd.mynfc":["taglet"],"application/vnd.neurolanguage.nlu":["nlu"],"application/vnd.nitf":["ntf","nitf"],"application/vnd.noblenet-directory":["nnd"],"application/vnd.noblenet-sealer":["nns"],"application/vnd.noblenet-web":["nnw"],"application/vnd.nokia.n-gage.data":["ngdat"],"application/vnd.nokia.n-gage.symbian.install":["n-gage"],"application/vnd.nokia.radio-preset":["rpst"],"application/vnd.nokia.radio-presets":["rpss"],"application/vnd.novadigm.edm":["edm"],"application/vnd.novadigm.edx":["edx"],"application/vnd.novadigm.ext":["ext"],"application/vnd.oasis.opendocument.chart":["odc"],"application/vnd.oasis.opendocument.chart-template":["otc"],"application/vnd.oasis.opendocument.database":["odb"],"application/vnd.oasis.opendocument.formula":["odf"],"application/vnd.oasis.opendocument.formula-template":["odft"],"application/vnd.oasis.opendocument.graphics":["odg"],"application/vnd.oasis.opendocument.graphics-template":["otg"],"application/vnd.oasis.opendocument.image":["odi"],"application/vnd.oasis.opendocument.image-template":["oti"],"application/vnd.oasis.opendocument.presentation":["odp"],"application/vnd.oasis.opendocument.presentation-template":["otp"],"application/vnd.oasis.opendocument.spreadsheet":["ods"],"application/vnd.oasis.opendocument.spreadsheet-template":["ots"],"application/vnd.oasis.opendocument.text":["odt"],"application/vnd.oasis.opendocument.text-master":["odm"],"application/vnd.oasis.opendocument.text-template":["ott"],"application/vnd.oasis.opendocument.text-web":["oth"],"application/vnd.olpc-sugar":["xo"],"application/vnd.oma.dd2+xml":["dd2"],"application/vnd.openofficeorg.extension":["oxt"],"application/vnd.openxmlformats-officedocument.presentationml.presentation":["pptx"],"application/vnd.openxmlformats-officedocument.presentationml.slide":["sldx"],"application/vnd.openxmlformats-officedocument.presentationml.slideshow":["ppsx"],"application/vnd.openxmlformats-officedocument.presentationml.template":["potx"],"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":["xlsx"],"application/vnd.openxmlformats-officedocument.spreadsheetml.template":["xltx"],"application/vnd.openxmlformats-officedocument.wordprocessingml.document":["docx"],"application/vnd.openxmlformats-officedocument.wordprocessingml.template":["dotx"],"application/vnd.osgeo.mapguide.package":["mgp"],"application/vnd.osgi.dp":["dp"],"application/vnd.osgi.subsystem":["esa"],"application/vnd.palm":["pdb","pqa","oprc"],"application/vnd.pawaafile":["paw"],"application/vnd.pg.format":["str"],"application/vnd.pg.osasli":["ei6"],"application/vnd.picsel":["efif"],"application/vnd.pmi.widget":["wg"],"application/vnd.pocketlearn":["plf"],"application/vnd.powerbuilder6":["pbd"],"application/vnd.previewsystems.box":["box"],"application/vnd.proteus.magazine":["mgz"],"application/vnd.publishare-delta-tree":["qps"],"application/vnd.pvi.ptid1":["ptid"],"application/vnd.quark.quarkxpress":["qxd","qxt","qwd","qwt","qxl","qxb"],"application/vnd.realvnc.bed":["bed"],"application/vnd.recordare.musicxml":["mxl"],"application/vnd.recordare.musicxml+xml":["musicxml"],"application/vnd.rig.cryptonote":["cryptonote"],"application/vnd.rim.cod":["cod"],"application/vnd.rn-realmedia":["rm"],"application/vnd.rn-realmedia-vbr":["rmvb"],"application/vnd.route66.link66+xml":["link66"],"application/vnd.sailingtracker.track":["st"],"application/vnd.seemail":["see"],"application/vnd.sema":["sema"],"application/vnd.semd":["semd"],"application/vnd.semf":["semf"],"application/vnd.shana.informed.formdata":["ifm"],"application/vnd.shana.informed.formtemplate":["itp"],"application/vnd.shana.informed.interchange":["iif"],"application/vnd.shana.informed.package":["ipk"],"application/vnd.simtech-mindmapper":["twd","twds"],"application/vnd.smaf":["mmf"],"application/vnd.smart.teacher":["teacher"],"application/vnd.solent.sdkm+xml":["sdkm","sdkd"],"application/vnd.spotfire.dxp":["dxp"],"application/vnd.spotfire.sfs":["sfs"],"application/vnd.stardivision.calc":["sdc"],"application/vnd.stardivision.draw":["sda"],"application/vnd.stardivision.impress":["sdd"],"application/vnd.stardivision.math":["smf"],"application/vnd.stardivision.writer":["sdw","vor"],"application/vnd.stardivision.writer-global":["sgl"],"application/vnd.stepmania.package":["smzip"],"application/vnd.stepmania.stepchart":["sm"],"application/vnd.sun.wadl+xml":["wadl"],"application/vnd.sun.xml.calc":["sxc"],"application/vnd.sun.xml.calc.template":["stc"],"application/vnd.sun.xml.draw":["sxd"],"application/vnd.sun.xml.draw.template":["std"],"application/vnd.sun.xml.impress":["sxi"],"application/vnd.sun.xml.impress.template":["sti"],"application/vnd.sun.xml.math":["sxm"],"application/vnd.sun.xml.writer":["sxw"],"application/vnd.sun.xml.writer.global":["sxg"],"application/vnd.sun.xml.writer.template":["stw"],"application/vnd.sus-calendar":["sus","susp"],"application/vnd.svd":["svd"],"application/vnd.symbian.install":["sis","sisx"],"application/vnd.syncml+xml":["xsm"],"application/vnd.syncml.dm+wbxml":["bdm"],"application/vnd.syncml.dm+xml":["xdm"],"application/vnd.tao.intent-module-archive":["tao"],"application/vnd.tcpdump.pcap":["pcap","cap","dmp"],"application/vnd.tmobile-livetv":["tmo"],"application/vnd.trid.tpt":["tpt"],"application/vnd.triscape.mxs":["mxs"],"application/vnd.trueapp":["tra"],"application/vnd.ufdl":["ufd","ufdl"],"application/vnd.uiq.theme":["utz"],"application/vnd.umajin":["umj"],"application/vnd.unity":["unityweb"],"application/vnd.uoml+xml":["uoml"],"application/vnd.vcx":["vcx"],"application/vnd.visio":["vsd","vst","vss","vsw"],"application/vnd.visionary":["vis"],"application/vnd.vsf":["vsf"],"application/vnd.wap.wbxml":["wbxml"],"application/vnd.wap.wmlc":["wmlc"],"application/vnd.wap.wmlscriptc":["wmlsc"],"application/vnd.webturbo":["wtb"],"application/vnd.wolfram.player":["nbp"],"application/vnd.wordperfect":["wpd"],"application/vnd.wqd":["wqd"],"application/vnd.wt.stf":["stf"],"application/vnd.xara":["xar"],"application/vnd.xfdl":["xfdl"],"application/vnd.yamaha.hv-dic":["hvd"],"application/vnd.yamaha.hv-script":["hvs"],"application/vnd.yamaha.hv-voice":["hvp"],"application/vnd.yamaha.openscoreformat":["osf"],"application/vnd.yamaha.openscoreformat.osfpvg+xml":["osfpvg"],"application/vnd.yamaha.smaf-audio":["saf"],"application/vnd.yamaha.smaf-phrase":["spf"],"application/vnd.yellowriver-custom-menu":["cmp"],"application/vnd.zul":["zir","zirz"],"application/vnd.zzazz.deck+xml":["zaz"],"application/x-7z-compressed":["7z"],"application/x-abiword":["abw"],"application/x-ace-compressed":["ace"],"application/x-apple-diskimage":["*dmg"],"application/x-arj":["arj"],"application/x-authorware-bin":["aab","x32","u32","vox"],"application/x-authorware-map":["aam"],"application/x-authorware-seg":["aas"],"application/x-bcpio":["bcpio"],"application/x-bdoc":["*bdoc"],"application/x-bittorrent":["torrent"],"application/x-blorb":["blb","blorb"],"application/x-bzip":["bz"],"application/x-bzip2":["bz2","boz"],"application/x-cbr":["cbr","cba","cbt","cbz","cb7"],"application/x-cdlink":["vcd"],"application/x-cfs-compressed":["cfs"],"application/x-chat":["chat"],"application/x-chess-pgn":["pgn"],"application/x-chrome-extension":["crx"],"application/x-cocoa":["cco"],"application/x-conference":["nsc"],"application/x-cpio":["cpio"],"application/x-csh":["csh"],"application/x-debian-package":["*deb","udeb"],"application/x-dgc-compressed":["dgc"],"application/x-director":["dir","dcr","dxr","cst","cct","cxt","w3d","fgd","swa"],"application/x-doom":["wad"],"application/x-dtbncx+xml":["ncx"],"application/x-dtbook+xml":["dtb"],"application/x-dtbresource+xml":["res"],"application/x-dvi":["dvi"],"application/x-envoy":["evy"],"application/x-eva":["eva"],"application/x-font-bdf":["bdf"],"application/x-font-ghostscript":["gsf"],"application/x-font-linux-psf":["psf"],"application/x-font-pcf":["pcf"],"application/x-font-snf":["snf"],"application/x-font-type1":["pfa","pfb","pfm","afm"],"application/x-freearc":["arc"],"application/x-futuresplash":["spl"],"application/x-gca-compressed":["gca"],"application/x-glulx":["ulx"],"application/x-gnumeric":["gnumeric"],"application/x-gramps-xml":["gramps"],"application/x-gtar":["gtar"],"application/x-hdf":["hdf"],"application/x-httpd-php":["php"],"application/x-install-instructions":["install"],"application/x-iso9660-image":["*iso"],"application/x-java-archive-diff":["jardiff"],"application/x-java-jnlp-file":["jnlp"],"application/x-latex":["latex"],"application/x-lua-bytecode":["luac"],"application/x-lzh-compressed":["lzh","lha"],"application/x-makeself":["run"],"application/x-mie":["mie"],"application/x-mobipocket-ebook":["prc","mobi"],"application/x-ms-application":["application"],"application/x-ms-shortcut":["lnk"],"application/x-ms-wmd":["wmd"],"application/x-ms-wmz":["wmz"],"application/x-ms-xbap":["xbap"],"application/x-msaccess":["mdb"],"application/x-msbinder":["obd"],"application/x-mscardfile":["crd"],"application/x-msclip":["clp"],"application/x-msdos-program":["*exe"],"application/x-msdownload":["*exe","*dll","com","bat","*msi"],"application/x-msmediaview":["mvb","m13","m14"],"application/x-msmetafile":["*wmf","*wmz","*emf","emz"],"application/x-msmoney":["mny"],"application/x-mspublisher":["pub"],"application/x-msschedule":["scd"],"application/x-msterminal":["trm"],"application/x-mswrite":["wri"],"application/x-netcdf":["nc","cdf"],"application/x-ns-proxy-autoconfig":["pac"],"application/x-nzb":["nzb"],"application/x-perl":["pl","pm"],"application/x-pilot":["*prc","*pdb"],"application/x-pkcs12":["p12","pfx"],"application/x-pkcs7-certificates":["p7b","spc"],"application/x-pkcs7-certreqresp":["p7r"],"application/x-rar-compressed":["rar"],"application/x-redhat-package-manager":["rpm"],"application/x-research-info-systems":["ris"],"application/x-sea":["sea"],"application/x-sh":["sh"],"application/x-shar":["shar"],"application/x-shockwave-flash":["swf"],"application/x-silverlight-app":["xap"],"application/x-sql":["sql"],"application/x-stuffit":["sit"],"application/x-stuffitx":["sitx"],"application/x-subrip":["srt"],"application/x-sv4cpio":["sv4cpio"],"application/x-sv4crc":["sv4crc"],"application/x-t3vm-image":["t3"],"application/x-tads":["gam"],"application/x-tar":["tar"],"application/x-tcl":["tcl","tk"],"application/x-tex":["tex"],"application/x-tex-tfm":["tfm"],"application/x-texinfo":["texinfo","texi"],"application/x-tgif":["obj"],"application/x-ustar":["ustar"],"application/x-virtualbox-hdd":["hdd"],"application/x-virtualbox-ova":["ova"],"application/x-virtualbox-ovf":["ovf"],"application/x-virtualbox-vbox":["vbox"],"application/x-virtualbox-vbox-extpack":["vbox-extpack"],"application/x-virtualbox-vdi":["vdi"],"application/x-virtualbox-vhd":["vhd"],"application/x-virtualbox-vmdk":["vmdk"],"application/x-wais-source":["src"],"application/x-web-app-manifest+json":["webapp"],"application/x-x509-ca-cert":["der","crt","pem"],"application/x-xfig":["fig"],"application/x-xliff+xml":["xlf"],"application/x-xpinstall":["xpi"],"application/x-xz":["xz"],"application/x-zmachine":["z1","z2","z3","z4","z5","z6","z7","z8"],"audio/vnd.dece.audio":["uva","uvva"],"audio/vnd.digital-winds":["eol"],"audio/vnd.dra":["dra"],"audio/vnd.dts":["dts"],"audio/vnd.dts.hd":["dtshd"],"audio/vnd.lucent.voice":["lvp"],"audio/vnd.ms-playready.media.pya":["pya"],"audio/vnd.nuera.ecelp4800":["ecelp4800"],"audio/vnd.nuera.ecelp7470":["ecelp7470"],"audio/vnd.nuera.ecelp9600":["ecelp9600"],"audio/vnd.rip":["rip"],"audio/x-aac":["aac"],"audio/x-aiff":["aif","aiff","aifc"],"audio/x-caf":["caf"],"audio/x-flac":["flac"],"audio/x-m4a":["*m4a"],"audio/x-matroska":["mka"],"audio/x-mpegurl":["m3u"],"audio/x-ms-wax":["wax"],"audio/x-ms-wma":["wma"],"audio/x-pn-realaudio":["ram","ra"],"audio/x-pn-realaudio-plugin":["rmp"],"audio/x-realaudio":["*ra"],"audio/x-wav":["*wav"],"chemical/x-cdx":["cdx"],"chemical/x-cif":["cif"],"chemical/x-cmdf":["cmdf"],"chemical/x-cml":["cml"],"chemical/x-csml":["csml"],"chemical/x-xyz":["xyz"],"image/prs.btif":["btif"],"image/prs.pti":["pti"],"image/vnd.adobe.photoshop":["psd"],"image/vnd.airzip.accelerator.azv":["azv"],"image/vnd.dece.graphic":["uvi","uvvi","uvg","uvvg"],"image/vnd.djvu":["djvu","djv"],"image/vnd.dvb.subtitle":["*sub"],"image/vnd.dwg":["dwg"],"image/vnd.dxf":["dxf"],"image/vnd.fastbidsheet":["fbs"],"image/vnd.fpx":["fpx"],"image/vnd.fst":["fst"],"image/vnd.fujixerox.edmics-mmr":["mmr"],"image/vnd.fujixerox.edmics-rlc":["rlc"],"image/vnd.microsoft.icon":["ico"],"image/vnd.ms-modi":["mdi"],"image/vnd.ms-photo":["wdp"],"image/vnd.net-fpx":["npx"],"image/vnd.tencent.tap":["tap"],"image/vnd.valve.source.texture":["vtf"],"image/vnd.wap.wbmp":["wbmp"],"image/vnd.xiff":["xif"],"image/vnd.zbrush.pcx":["pcx"],"image/x-3ds":["3ds"],"image/x-cmu-raster":["ras"],"image/x-cmx":["cmx"],"image/x-freehand":["fh","fhc","fh4","fh5","fh7"],"image/x-icon":["*ico"],"image/x-jng":["jng"],"image/x-mrsid-image":["sid"],"image/x-ms-bmp":["*bmp"],"image/x-pcx":["*pcx"],"image/x-pict":["pic","pct"],"image/x-portable-anymap":["pnm"],"image/x-portable-bitmap":["pbm"],"image/x-portable-graymap":["pgm"],"image/x-portable-pixmap":["ppm"],"image/x-rgb":["rgb"],"image/x-tga":["tga"],"image/x-xbitmap":["xbm"],"image/x-xpixmap":["xpm"],"image/x-xwindowdump":["xwd"],"message/vnd.wfa.wsc":["wsc"],"model/vnd.collada+xml":["dae"],"model/vnd.dwf":["dwf"],"model/vnd.gdl":["gdl"],"model/vnd.gtw":["gtw"],"model/vnd.mts":["mts"],"model/vnd.opengex":["ogex"],"model/vnd.parasolid.transmit.binary":["x_b"],"model/vnd.parasolid.transmit.text":["x_t"],"model/vnd.usdz+zip":["usdz"],"model/vnd.valve.source.compiled-map":["bsp"],"model/vnd.vtu":["vtu"],"text/prs.lines.tag":["dsc"],"text/vnd.curl":["curl"],"text/vnd.curl.dcurl":["dcurl"],"text/vnd.curl.mcurl":["mcurl"],"text/vnd.curl.scurl":["scurl"],"text/vnd.dvb.subtitle":["sub"],"text/vnd.fly":["fly"],"text/vnd.fmi.flexstor":["flx"],"text/vnd.graphviz":["gv"],"text/vnd.in3d.3dml":["3dml"],"text/vnd.in3d.spot":["spot"],"text/vnd.sun.j2me.app-descriptor":["jad"],"text/vnd.wap.wml":["wml"],"text/vnd.wap.wmlscript":["wmls"],"text/x-asm":["s","asm"],"text/x-c":["c","cc","cxx","cpp","h","hh","dic"],"text/x-component":["htc"],"text/x-fortran":["f","for","f77","f90"],"text/x-handlebars-template":["hbs"],"text/x-java-source":["java"],"text/x-lua":["lua"],"text/x-markdown":["mkd"],"text/x-nfo":["nfo"],"text/x-opml":["opml"],"text/x-org":["*org"],"text/x-pascal":["p","pas"],"text/x-processing":["pde"],"text/x-sass":["sass"],"text/x-scss":["scss"],"text/x-setext":["etx"],"text/x-sfv":["sfv"],"text/x-suse-ymp":["ymp"],"text/x-uuencode":["uu"],"text/x-vcalendar":["vcs"],"text/x-vcard":["vcf"],"video/vnd.dece.hd":["uvh","uvvh"],"video/vnd.dece.mobile":["uvm","uvvm"],"video/vnd.dece.pd":["uvp","uvvp"],"video/vnd.dece.sd":["uvs","uvvs"],"video/vnd.dece.video":["uvv","uvvv"],"video/vnd.dvb.file":["dvb"],"video/vnd.fvt":["fvt"],"video/vnd.mpegurl":["mxu","m4u"],"video/vnd.ms-playready.media.pyv":["pyv"],"video/vnd.uvvu.mp4":["uvu","uvvu"],"video/vnd.vivo":["viv"],"video/x-f4v":["f4v"],"video/x-fli":["fli"],"video/x-flv":["flv"],"video/x-m4v":["m4v"],"video/x-matroska":["mkv","mk3d","mks"],"video/x-mng":["mng"],"video/x-ms-asf":["asf","asx"],"video/x-ms-vob":["vob"],"video/x-ms-wm":["wm"],"video/x-ms-wmv":["wmv"],"video/x-ms-wmx":["wmx"],"video/x-ms-wvx":["wvx"],"video/x-msvideo":["avi"],"video/x-sgi-movie":["movie"],"video/x-smv":["smv"],"x-conference/x-cooltalk":["ice"]};
-
-/***/ }),
-
 /***/ 984:
 /***/ (function(__unusedmodule, exports, __webpack_require__) {
 
@@ -41748,7 +43383,9 @@ module.exports = {"application/prs.cww":["cww"],"application/vnd.3gpp.pic-bw-lar
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+/* global window */
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.fromArrayBufferToHex = exports.hasBrowserCrypto = exports.createCrypto = void 0;
 const crypto_1 = __webpack_require__(378);
 const crypto_2 = __webpack_require__(386);
 function createCrypto() {
@@ -41764,6 +43401,22 @@ function hasBrowserCrypto() {
         typeof window.crypto.subtle !== 'undefined');
 }
 exports.hasBrowserCrypto = hasBrowserCrypto;
+/**
+ * Converts an ArrayBuffer to a hexadecimal string.
+ * @param arrayBuffer The ArrayBuffer to convert to hexadecimal string.
+ * @return The hexadecimal encoding of the ArrayBuffer.
+ */
+function fromArrayBufferToHex(arrayBuffer) {
+    // Convert buffer to byte array.
+    const byteArray = Array.from(new Uint8Array(arrayBuffer));
+    // Convert bytes to hex string.
+    return byteArray
+        .map(byte => {
+        return byte.toString(16).padStart(2, '0');
+    })
+        .join('');
+}
+exports.fromArrayBufferToHex = fromArrayBufferToHex;
 //# sourceMappingURL=crypto.js.map
 
 /***/ }),
@@ -41942,6 +43595,72 @@ _IN('1.3.6.1.5.5.7.3.3', 'codeSigning');
 _IN('1.3.6.1.5.5.7.3.4', 'emailProtection');
 _IN('1.3.6.1.5.5.7.3.8', 'timeStamping');
 
+
+/***/ }),
+
+/***/ 992:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+// Copyright 2021 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ExternalAccountClient = void 0;
+const baseexternalclient_1 = __webpack_require__(48);
+const identitypoolclient_1 = __webpack_require__(345);
+const awsclient_1 = __webpack_require__(549);
+/**
+ * Dummy class with no constructor. Developers are expected to use fromJSON.
+ */
+class ExternalAccountClient {
+    constructor() {
+        throw new Error('ExternalAccountClients should be initialized via: ' +
+            'ExternalAccountClient.fromJSON(), ' +
+            'directly via explicit constructors, eg. ' +
+            'new AwsClient(options), new IdentityPoolClient(options) or via ' +
+            'new GoogleAuth(options).getClient()');
+    }
+    /**
+     * This static method will instantiate the
+     * corresponding type of external account credential depending on the
+     * underlying credential source.
+     * @param options The external account options object typically loaded
+     *   from the external account JSON credential file.
+     * @param additionalOptions Optional additional behavior customization
+     *   options. These currently customize expiration threshold time and
+     *   whether to retry on 401/403 API request errors.
+     * @return A BaseExternalAccountClient instance or null if the options
+     *   provided do not correspond to an external account credential.
+     */
+    static fromJSON(options, additionalOptions) {
+        var _a;
+        if (options && options.type === baseexternalclient_1.EXTERNAL_ACCOUNT_TYPE) {
+            if ((_a = options.credential_source) === null || _a === void 0 ? void 0 : _a.environment_id) {
+                return new awsclient_1.AwsClient(options, additionalOptions);
+            }
+            else {
+                return new identitypoolclient_1.IdentityPoolClient(options, additionalOptions);
+            }
+        }
+        else {
+            return null;
+        }
+    }
+}
+exports.ExternalAccountClient = ExternalAccountClient;
+//# sourceMappingURL=externalclient.js.map
 
 /***/ }),
 
