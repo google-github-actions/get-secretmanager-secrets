@@ -37,7 +37,7 @@
     "eslint-plugin-prettier": "^3.4.0",
     "eslint": "^7.31.0",
     "husky": "^7.0.1",
-    "mocha": "^9.0.2",
+    "mocha": "^9.0.3",
     "prettier": "^2.3.2",
     "ts-node": "^10.1.0",
     "typescript": "^4.3.5"
