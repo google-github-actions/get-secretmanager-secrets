@@ -29,7 +29,7 @@
     "@types/chai": "^4.2.21",
     "@types/mocha": "^9.0.0",
     "@types/node": "^16.4.3",
-    "@typescript-eslint/eslint-plugin": "^4.28.4",
+    "@typescript-eslint/eslint-plugin": "^4.28.5",
     "@typescript-eslint/parser": "^4.28.5",
     "@zeit/ncc": "^0.22.3",
     "chai": "^4.3.4",
