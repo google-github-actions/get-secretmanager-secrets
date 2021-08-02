@@ -35,7 +35,7 @@
     "chai": "^4.3.4",
     "eslint-config-prettier": "^6.15.0",
     "eslint-plugin-prettier": "^3.4.0",
-    "eslint": "^7.31.0",
+    "eslint": "^7.32.0",
     "husky": "^7.0.1",
     "mocha": "^9.0.3",
     "prettier": "^2.3.2",
