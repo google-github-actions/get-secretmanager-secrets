@@ -929,7 +929,7 @@ class BaseExternalAccountClient extends authclient_1.AuthClient {
     }
     /**
      * The main authentication interface. It takes an optional url which when
-     * present is the endpoint> being accessed, and returns a Promise which
+     * present is the endpoint being accessed, and returns a Promise which
      * resolves with authorization header fields.
      *
      * The result has the form:
@@ -1063,11 +1063,18 @@ class BaseExternalAccountClient extends authclient_1.AuthClient {
         if (this.serviceAccountImpersonationUrl) {
             this.cachedAccessToken = await this.getImpersonatedAccessToken(stsResponse.access_token);
         }
-        else {
+        else if (stsResponse.expires_in) {
             // Save response in cached access token.
             this.cachedAccessToken = {
                 access_token: stsResponse.access_token,
                 expiry_date: new Date().getTime() + stsResponse.expires_in * 1000,
+                res: stsResponse.res,
+            };
+        }
+        else {
+            // Save response in cached access token.
+            this.cachedAccessToken = {
+                access_token: stsResponse.access_token,
                 res: stsResponse.res,
             };
         }
@@ -1757,6 +1764,10 @@ exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
+exports.destroy = util.deprecate(
+	() => {},
+	'Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.'
+);
 
 /**
  * Colors.
@@ -1986,7 +1997,9 @@ const {formatters} = module.exports;
 formatters.o = function (v) {
 	this.inspectOpts.colors = this.useColors;
 	return util.inspect(v, this.inspectOpts)
-		.replace(/\s*\n\s*/g, ' ');
+		.split('\n')
+		.map(str => str.trim())
+		.join(' ');
 };
 
 /**
@@ -13696,23 +13709,32 @@ module.exports = {
 "use strict";
 
 const os = __webpack_require__(87);
+const tty = __webpack_require__(867);
 const hasFlag = __webpack_require__(364);
 
-const env = process.env;
+const {env} = process;
 
 let forceColor;
 if (hasFlag('no-color') ||
 	hasFlag('no-colors') ||
-	hasFlag('color=false')) {
-	forceColor = false;
+	hasFlag('color=false') ||
+	hasFlag('color=never')) {
+	forceColor = 0;
 } else if (hasFlag('color') ||
 	hasFlag('colors') ||
 	hasFlag('color=true') ||
 	hasFlag('color=always')) {
-	forceColor = true;
+	forceColor = 1;
 }
+
 if ('FORCE_COLOR' in env) {
-	forceColor = env.FORCE_COLOR.length === 0 || parseInt(env.FORCE_COLOR, 10) !== 0;
+	if (env.FORCE_COLOR === 'true') {
+		forceColor = 1;
+	} else if (env.FORCE_COLOR === 'false') {
+		forceColor = 0;
+	} else {
+		forceColor = env.FORCE_COLOR.length === 0 ? 1 : Math.min(parseInt(env.FORCE_COLOR, 10), 3);
+	}
 }
 
 function translateLevel(level) {
@@ -13728,8 +13750,8 @@ function translateLevel(level) {
 	};
 }
 
-function supportsColor(stream) {
-	if (forceColor === false) {
+function supportsColor(haveStream, streamIsTTY) {
+	if (forceColor === 0) {
 		return 0;
 	}
 
@@ -13743,22 +13765,21 @@ function supportsColor(stream) {
 		return 2;
 	}
 
-	if (stream && !stream.isTTY && forceColor !== true) {
+	if (haveStream && !streamIsTTY && forceColor === undefined) {
 		return 0;
 	}
 
-	const min = forceColor ? 1 : 0;
+	const min = forceColor || 0;
+
+	if (env.TERM === 'dumb') {
+		return min;
+	}
 
 	if (process.platform === 'win32') {
-		// Node.js 7.5.0 is the first version of Node.js to include a patch to
-		// libuv that enables 256 color output on Windows. Anything earlier and it
-		// won't work. However, here we target Node.js 8 at minimum as it is an LTS
-		// release, and Node.js 7 is not. Windows 10 build 10586 is the first Windows
-		// release that supports 256 colors. Windows 10 build 14931 is the first release
-		// that supports 16m/TrueColor.
+		// Windows 10 build 10586 is the first Windows release that supports 256 colors.
+		// Windows 10 build 14931 is the first release that supports 16m/TrueColor.
 		const osRelease = os.release().split('.');
 		if (
-			Number(process.versions.node.split('.')[0]) >= 8 &&
 			Number(osRelease[0]) >= 10 &&
 			Number(osRelease[2]) >= 10586
 		) {
@@ -13769,7 +13790,7 @@ function supportsColor(stream) {
 	}
 
 	if ('CI' in env) {
-		if (['TRAVIS', 'CIRCLECI', 'APPVEYOR', 'GITLAB_CI'].some(sign => sign in env) || env.CI_NAME === 'codeship') {
+		if (['TRAVIS', 'CIRCLECI', 'APPVEYOR', 'GITLAB_CI', 'GITHUB_ACTIONS', 'BUILDKITE'].some(sign => sign in env) || env.CI_NAME === 'codeship') {
 			return 1;
 		}
 
@@ -13808,22 +13829,18 @@ function supportsColor(stream) {
 		return 1;
 	}
 
-	if (env.TERM === 'dumb') {
-		return min;
-	}
-
 	return min;
 }
 
 function getSupportLevel(stream) {
-	const level = supportsColor(stream);
+	const level = supportsColor(stream, stream && stream.isTTY);
 	return translateLevel(level);
 }
 
 module.exports = {
 	supportsColor: getSupportLevel,
-	stdout: getSupportLevel(process.stdout),
-	stderr: getSupportLevel(process.stderr)
+	stdout: translateLevel(supportsColor(true, tty.isatty(1))),
+	stderr: translateLevel(supportsColor(true, tty.isatty(2)))
 };
 
 
@@ -20233,12 +20250,12 @@ module.exports = require("assert");
 
 "use strict";
 
-module.exports = (flag, argv) => {
-	argv = argv || process.argv;
+
+module.exports = (flag, argv = process.argv) => {
 	const prefix = flag.startsWith('-') ? '' : (flag.length === 1 ? '-' : '--');
-	const pos = argv.indexOf(prefix + flag);
-	const terminatorPos = argv.indexOf('--');
-	return pos !== -1 && (terminatorPos === -1 ? true : pos < terminatorPos);
+	const position = argv.indexOf(prefix + flag);
+	const terminatorPosition = argv.indexOf('--');
+	return position !== -1 && (terminatorPosition === -1 || position < terminatorPosition);
 };
 
 
@@ -29345,15 +29362,11 @@ function setup(env) {
 	createDebug.enable = enable;
 	createDebug.enabled = enabled;
 	createDebug.humanize = __webpack_require__(317);
+	createDebug.destroy = destroy;
 
 	Object.keys(env).forEach(key => {
 		createDebug[key] = env[key];
 	});
-
-	/**
-	* Active `debug` instances.
-	*/
-	createDebug.instances = [];
 
 	/**
 	* The currently active debug mode names, and names to skip.
@@ -29396,6 +29409,9 @@ function setup(env) {
 	*/
 	function createDebug(namespace) {
 		let prevTime;
+		let enableOverride = null;
+		let namespacesCache;
+		let enabledCache;
 
 		function debug(...args) {
 			// Disabled?
@@ -29425,7 +29441,7 @@ function setup(env) {
 			args[0] = args[0].replace(/%([a-zA-Z%])/g, (match, format) => {
 				// If we encounter an escaped % then don't increase the array index
 				if (match === '%%') {
-					return match;
+					return '%';
 				}
 				index++;
 				const formatter = createDebug.formatters[format];
@@ -29448,31 +29464,36 @@ function setup(env) {
 		}
 
 		debug.namespace = namespace;
-		debug.enabled = createDebug.enabled(namespace);
 		debug.useColors = createDebug.useColors();
-		debug.color = selectColor(namespace);
-		debug.destroy = destroy;
+		debug.color = createDebug.selectColor(namespace);
 		debug.extend = extend;
-		// Debug.formatArgs = formatArgs;
-		// debug.rawLog = rawLog;
+		debug.destroy = createDebug.destroy; // XXX Temporary. Will be removed in the next major release.
 
-		// env-specific initialization logic for debug instances
+		Object.defineProperty(debug, 'enabled', {
+			enumerable: true,
+			configurable: false,
+			get: () => {
+				if (enableOverride !== null) {
+					return enableOverride;
+				}
+				if (namespacesCache !== createDebug.namespaces) {
+					namespacesCache = createDebug.namespaces;
+					enabledCache = createDebug.enabled(namespace);
+				}
+
+				return enabledCache;
+			},
+			set: v => {
+				enableOverride = v;
+			}
+		});
+
+		// Env-specific initialization logic for debug instances
 		if (typeof createDebug.init === 'function') {
 			createDebug.init(debug);
 		}
 
-		createDebug.instances.push(debug);
-
 		return debug;
-	}
-
-	function destroy() {
-		const index = createDebug.instances.indexOf(this);
-		if (index !== -1) {
-			createDebug.instances.splice(index, 1);
-			return true;
-		}
-		return false;
 	}
 
 	function extend(namespace, delimiter) {
@@ -29490,6 +29511,7 @@ function setup(env) {
 	*/
 	function enable(namespaces) {
 		createDebug.save(namespaces);
+		createDebug.namespaces = namespaces;
 
 		createDebug.names = [];
 		createDebug.skips = [];
@@ -29511,11 +29533,6 @@ function setup(env) {
 			} else {
 				createDebug.names.push(new RegExp('^' + namespaces + '$'));
 			}
-		}
-
-		for (i = 0; i < createDebug.instances.length; i++) {
-			const instance = createDebug.instances[i];
-			instance.enabled = createDebug.enabled(instance.namespace);
 		}
 	}
 
@@ -29589,6 +29606,14 @@ function setup(env) {
 			return val.stack || val.message;
 		}
 		return val;
+	}
+
+	/**
+	* XXX DO NOT USE. This is a temporary stub function.
+	* XXX It WILL be removed in the next major release.
+	*/
+	function destroy() {
+		console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
 	}
 
 	createDebug.enable(createDebug.load());
@@ -33178,182 +33203,6 @@ p7v.recipientInfoValidator = {
 
 /***/ }),
 
-/***/ 640:
-/***/ (function(__unusedmodule, exports, __webpack_require__) {
-
-"use strict";
-
-// Copyright 2021 Google LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//      http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.DownscopedClient = exports.EXPIRATION_TIME_OFFSET = void 0;
-const authclient_1 = __webpack_require__(616);
-const sts = __webpack_require__(732);
-/**
- * The required token exchange grant_type: rfc8693#section-2.1
- */
-const STS_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:token-exchange';
-/**
- * The requested token exchange requested_token_type: rfc8693#section-2.1
- */
-const STS_REQUEST_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
-/**
- * The requested token exchange subject_token_type: rfc8693#section-2.1
- */
-const STS_SUBJECT_TOKEN_TYPE = 'urn:ietf:params:oauth:token-type:access_token';
-/** The STS access token exchange end point. */
-const STS_ACCESS_TOKEN_URL = 'https://sts.googleapis.com/v1beta/token';
-/**
- * Offset to take into account network delays and server clock skews.
- */
-exports.EXPIRATION_TIME_OFFSET = 5 * 60 * 1000;
-class DownscopedClient extends authclient_1.AuthClient {
-    constructor(client, cab, additionalOptions) {
-        super();
-        this.client = client;
-        this.cab = cab;
-        // Check a number of 1-10 access boundary rules are defined within credential access boundary.
-        if (cab.accessBoundary.accessBoundaryRules.length === 0) {
-            throw new Error('At least one access boundary rule needs to be defined.');
-        }
-        else if (cab.accessBoundary.accessBoundaryRules.length > 10) {
-            throw new Error('Access boundary rule exceeds limit, max 10 allowed.');
-        }
-        // Check at least one permission should be defined in each access boundary rule.
-        for (const rule of cab.accessBoundary.accessBoundaryRules) {
-            if (rule.availablePermissions.length === 0) {
-                throw new Error('At least one permission should be defined in access boundary rules.');
-            }
-        }
-        this.stsCredential = new sts.StsCredentials(STS_ACCESS_TOKEN_URL);
-        // Default OAuth scope. This could be overridden via public property.
-        this.cachedDownscopedAccessToken = null;
-        this.credentialAccessBoundary = cab;
-        this.authClient = client;
-        // As threshold could be zero,
-        // eagerRefreshThresholdMillis || EXPIRATION_TIME_OFFSET will override the
-        // zero value.
-        if (typeof (additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.eagerRefreshThresholdMillis) !== 'number') {
-            this.eagerRefreshThresholdMillis = exports.EXPIRATION_TIME_OFFSET;
-        }
-        else {
-            this.eagerRefreshThresholdMillis = additionalOptions
-                .eagerRefreshThresholdMillis;
-        }
-        this.forceRefreshOnFailure = !!(additionalOptions === null || additionalOptions === void 0 ? void 0 : additionalOptions.forceRefreshOnFailure);
-    }
-    /**
-     * Provides a mechanism to inject Downscoped access tokens directly.
-     * When the provided credential expires, a new credential, using the
-     * external account options are retrieved.
-     * Notice DownscopedClient is the broker class mainly used for generate
-     * downscoped access tokens, it is unlikely we call this function in real
-     * use case.
-     * We implement to make this a helper function for testing all cases in getAccessToken().
-     * @param credentials The Credentials object to set on the current client.
-     */
-    setCredentials(credentials) {
-        super.setCredentials(credentials);
-        this.cachedDownscopedAccessToken = credentials;
-    }
-    async getAccessToken() {
-        // If the cached access token is unavailable or expired, force refresh.
-        // The Downscoped access token will be returned in GetAccessTokenResponse format.
-        // If cached access token is unavailable or expired, force refresh.
-        if (!this.cachedDownscopedAccessToken ||
-            this.isExpired(this.cachedDownscopedAccessToken)) {
-            await this.refreshAccessTokenAsync();
-        }
-        // Return Downscoped access token in GetAccessTokenResponse format.
-        return {
-            token: this.cachedDownscopedAccessToken.access_token,
-            res: this.cachedDownscopedAccessToken.res,
-        };
-    }
-    /**
-     * The main authentication interface. It takes an optional url which when
-     * present is the endpoint> being accessed, and returns a Promise which
-     * resolves with authorization header fields.
-     *
-     * The result has the form:
-     * { Authorization: 'Bearer <access_token_value>' }
-     */
-    async getRequestHeaders() {
-        throw new Error('Not implemented.');
-    }
-    request(opts, callback) {
-        throw new Error('Not implemented.');
-    }
-    /**
-     * Forces token refresh, even if unexpired tokens are currently cached.
-     * GCP access tokens are retrieved from authclient object/source credential.
-     * Thenm GCP access tokens are exchanged for downscoped access tokens via the
-     * token exchange endpoint.
-     * @return A promise that resolves with the fresh downscoped access token.
-     */
-    async refreshAccessTokenAsync() {
-        // Retrieve GCP access token from source credential.
-        const subjectToken = await (await this.authClient.getAccessToken()).token;
-        // Construct the STS credentials options.
-        const stsCredentialsOptions = {
-            grantType: STS_GRANT_TYPE,
-            requestedTokenType: STS_REQUEST_TOKEN_TYPE,
-            subjectToken: subjectToken,
-            subjectTokenType: STS_SUBJECT_TOKEN_TYPE,
-        };
-        // Exchange the source access token for a Downscoped access token.
-        const stsResponse = await this.stsCredential.exchangeToken(stsCredentialsOptions, undefined, this.credentialAccessBoundary);
-        // Save response in cached access token.
-        this.cachedDownscopedAccessToken = {
-            access_token: stsResponse.access_token,
-            expiry_date: new Date().getTime() + stsResponse.expires_in * 1000,
-            res: stsResponse.res,
-        };
-        // Save credentials.
-        this.credentials = {};
-        Object.assign(this.credentials, this.cachedDownscopedAccessToken);
-        delete this.credentials.res;
-        // Trigger tokens event to notify external listeners.
-        this.emit('tokens', {
-            refresh_token: null,
-            expiry_date: this.cachedDownscopedAccessToken.expiry_date,
-            access_token: this.cachedDownscopedAccessToken.access_token,
-            token_type: 'Bearer',
-            id_token: null,
-        });
-        // Return the cached access token.
-        return this.cachedDownscopedAccessToken;
-    }
-    /**
-     * Returns whether the provided credentials are expired or not.
-     * If there is no expiry time, assumes the token is not expired or expiring.
-     * @param downscopedAccessToken The credentials to check for expiration.
-     * @return Whether the credentials are expired or not.
-     */
-    isExpired(downscopedAccessToken) {
-        const now = new Date().getTime();
-        return downscopedAccessToken.expiry_date
-            ? now >=
-                downscopedAccessToken.expiry_date - this.eagerRefreshThresholdMillis
-            : false;
-    }
-}
-exports.DownscopedClient = DownscopedClient;
-//# sourceMappingURL=downscopedclient.js.map
-
-/***/ }),
-
 /***/ 642:
 /***/ (function(__unusedmodule, exports) {
 
@@ -33608,8 +33457,6 @@ var computeclient_1 = __webpack_require__(310);
 Object.defineProperty(exports, "Compute", { enumerable: true, get: function () { return computeclient_1.Compute; } });
 var envDetect_1 = __webpack_require__(813);
 Object.defineProperty(exports, "GCPEnv", { enumerable: true, get: function () { return envDetect_1.GCPEnv; } });
-var downscopedclient_1 = __webpack_require__(640);
-Object.defineProperty(exports, "DownscopedClient", { enumerable: true, get: function () { return downscopedclient_1.DownscopedClient; } });
 var iam_1 = __webpack_require__(866);
 Object.defineProperty(exports, "IAMAuth", { enumerable: true, get: function () { return iam_1.IAMAuth; } });
 var idtokenclient_1 = __webpack_require__(331);
@@ -33618,6 +33465,8 @@ var jwtaccess_1 = __webpack_require__(346);
 Object.defineProperty(exports, "JWTAccess", { enumerable: true, get: function () { return jwtaccess_1.JWTAccess; } });
 var jwtclient_1 = __webpack_require__(484);
 Object.defineProperty(exports, "JWT", { enumerable: true, get: function () { return jwtclient_1.JWT; } });
+var impersonated_1 = __webpack_require__(893);
+Object.defineProperty(exports, "Impersonated", { enumerable: true, get: function () { return impersonated_1.Impersonated; } });
 var oauth2client_1 = __webpack_require__(449);
 Object.defineProperty(exports, "CodeChallengeMethod", { enumerable: true, get: function () { return oauth2client_1.CodeChallengeMethod; } });
 Object.defineProperty(exports, "OAuth2Client", { enumerable: true, get: function () { return oauth2client_1.OAuth2Client; } });
@@ -36606,12 +36455,21 @@ if (typeof process === 'undefined' || process.type === 'renderer' || process.bro
  * This is the web browser implementation of `debug()`.
  */
 
-exports.log = log;
 exports.formatArgs = formatArgs;
 exports.save = save;
 exports.load = load;
 exports.useColors = useColors;
 exports.storage = localstorage();
+exports.destroy = (() => {
+	let warned = false;
+
+	return () => {
+		if (!warned) {
+			warned = true;
+			console.warn('Instance method `debug.destroy()` is deprecated and no longer does anything. It will be removed in the next major version of `debug`.');
+		}
+	};
+})();
 
 /**
  * Colors.
@@ -36772,18 +36630,14 @@ function formatArgs(args) {
 }
 
 /**
- * Invokes `console.log()` when available.
- * No-op when `console.log` is not a "function".
+ * Invokes `console.debug()` when available.
+ * No-op when `console.debug` is not a "function".
+ * If `console.debug` is not available, falls back
+ * to `console.log`.
  *
  * @api public
  */
-function log(...args) {
-	// This hackery is required for IE8/9, where
-	// the `console.log` function doesn't have 'apply'
-	return typeof console === 'object' &&
-		console.log &&
-		console.log(...args);
-}
+exports.log = console.debug || console.log || (() => {});
 
 /**
  * Save `namespaces`.
@@ -40236,6 +40090,123 @@ exports.validate = validate;
 
 /***/ }),
 
+/***/ 893:
+/***/ (function(__unusedmodule, exports, __webpack_require__) {
+
+"use strict";
+
+/**
+ * Copyright 2021 Google LLC
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.Impersonated = void 0;
+const oauth2client_1 = __webpack_require__(449);
+class Impersonated extends oauth2client_1.OAuth2Client {
+    /**
+     * Impersonated service account credentials.
+     *
+     * Create a new access token by impersonating another service account.
+     *
+     * Impersonated Credentials allowing credentials issued to a user or
+     * service account to impersonate another. The source project using
+     * Impersonated Credentials must enable the "IAMCredentials" API.
+     * Also, the target service account must grant the orginating principal
+     * the "Service Account Token Creator" IAM role.
+     *
+     * @param {object} options - The configuration object.
+     * @param {object} [options.sourceClient] the source credential used as to
+     * acquire the impersonated credentials.
+     * @param {string} [options.targetPrincipal] the service account to
+     * impersonate.
+     * @param {string[]} [options.delegates] the chained list of delegates
+     * required to grant the final access_token. If set, the sequence of
+     * identities must have "Service Account Token Creator" capability granted to
+     * the preceding identity. For example, if set to [serviceAccountB,
+     * serviceAccountC], the sourceCredential must have the Token Creator role on
+     * serviceAccountB. serviceAccountB must have the Token Creator on
+     * serviceAccountC. Finally, C must have Token Creator on target_principal.
+     * If left unset, sourceCredential must have that role on targetPrincipal.
+     * @param {string[]} [options.targetScopes] scopes to request during the
+     * authorization grant.
+     * @param {number} [options.lifetime] number of seconds the delegated
+     * credential should be valid for up to 3600 seconds by default, or 43,200
+     * seconds by extending the token's lifetime, see:
+     * https://cloud.google.com/iam/docs/creating-short-lived-service-account-credentials#sa-credentials-oauth
+     * @param {string} [options.endpoint] api endpoint override.
+     */
+    constructor(options = {}) {
+        var _a, _b, _c, _d, _e, _f;
+        super(options);
+        this.credentials = {
+            expiry_date: 1,
+            refresh_token: 'impersonated-placeholder',
+        };
+        this.sourceClient = (_a = options.sourceClient) !== null && _a !== void 0 ? _a : new oauth2client_1.OAuth2Client();
+        this.targetPrincipal = (_b = options.targetPrincipal) !== null && _b !== void 0 ? _b : '';
+        this.delegates = (_c = options.delegates) !== null && _c !== void 0 ? _c : [];
+        this.targetScopes = (_d = options.targetScopes) !== null && _d !== void 0 ? _d : [];
+        this.lifetime = (_e = options.lifetime) !== null && _e !== void 0 ? _e : 3600;
+        this.endpoint = (_f = options.endpoint) !== null && _f !== void 0 ? _f : 'https://iamcredentials.googleapis.com';
+    }
+    /**
+     * Refreshes the access token.
+     * @param refreshToken Unused parameter
+     */
+    async refreshToken(refreshToken) {
+        var _a, _b, _c, _d, _e, _f;
+        try {
+            await this.sourceClient.getAccessToken();
+            const name = 'projects/-/serviceAccounts/' + this.targetPrincipal;
+            const u = `${this.endpoint}/v1/${name}:generateAccessToken`;
+            const body = {
+                delegates: this.delegates,
+                scope: this.targetScopes,
+                lifetime: this.lifetime + 's',
+            };
+            const res = await this.sourceClient.request({
+                url: u,
+                data: body,
+                method: 'POST',
+            });
+            const tokenResponse = res.data;
+            this.credentials.access_token = tokenResponse.accessToken;
+            this.credentials.expiry_date = Date.parse(tokenResponse.expireTime);
+            return {
+                tokens: this.credentials,
+                res,
+            };
+        }
+        catch (error) {
+            const status = (_c = (_b = (_a = error === null || error === void 0 ? void 0 : error.response) === null || _a === void 0 ? void 0 : _a.data) === null || _b === void 0 ? void 0 : _b.error) === null || _c === void 0 ? void 0 : _c.status;
+            const message = (_f = (_e = (_d = error === null || error === void 0 ? void 0 : error.response) === null || _d === void 0 ? void 0 : _d.data) === null || _e === void 0 ? void 0 : _e.error) === null || _f === void 0 ? void 0 : _f.message;
+            if (status && message) {
+                error.message = `${status}: unable to impersonate: ${message}`;
+                throw error;
+            }
+            else {
+                error.message = `unable to impersonate: ${error}`;
+                throw error;
+            }
+        }
+    }
+}
+exports.Impersonated = Impersonated;
+//# sourceMappingURL=impersonated.js.map
+
+/***/ }),
+
 /***/ 904:
 /***/ (function(module, __unusedexports, __webpack_require__) {
 
@@ -41165,7 +41136,7 @@ function convertToPem(p12base64) {
 /***/ 947:
 /***/ (function(module) {
 
-module.exports = {"name":"google-auth-library","version":"7.3.0","author":"Google Inc.","description":"Google APIs Authentication Client Library for Node.js","engines":{"node":">=10"},"main":"./build/src/index.js","types":"./build/src/index.d.ts","repository":"googleapis/google-auth-library-nodejs.git","keywords":["google","api","google apis","client","client library"],"dependencies":{"arrify":"^2.0.0","base64-js":"^1.3.0","ecdsa-sig-formatter":"^1.0.11","fast-text-encoding":"^1.0.0","gaxios":"^4.0.0","gcp-metadata":"^4.2.0","gtoken":"^5.0.4","jws":"^4.0.0","lru-cache":"^6.0.0"},"devDependencies":{"@compodoc/compodoc":"^1.1.7","@types/base64-js":"^1.2.5","@types/chai":"^4.1.7","@types/jws":"^3.1.0","@types/lru-cache":"^5.0.0","@types/mocha":"^8.0.0","@types/mv":"^2.1.0","@types/ncp":"^2.0.1","@types/node":"^14.0.0","@types/sinon":"^10.0.0","@types/tmp":"^0.2.0","assert-rejects":"^1.0.0","c8":"^7.0.0","chai":"^4.2.0","codecov":"^3.0.2","execa":"^5.0.0","gts":"^2.0.0","is-docker":"^2.0.0","karma":"^6.0.0","karma-chrome-launcher":"^3.0.0","karma-coverage":"^2.0.0","karma-firefox-launcher":"^2.0.0","karma-mocha":"^2.0.0","karma-remap-coverage":"^0.1.5","karma-sourcemap-loader":"^0.3.7","karma-webpack":"^5.0.0","keypair":"^1.0.1","linkinator":"^2.0.0","mocha":"^8.0.0","mv":"^2.1.1","ncp":"^2.0.0","nock":"^13.0.0","null-loader":"^4.0.0","puppeteer":"^10.0.0","sinon":"^11.0.0","tmp":"^0.2.0","ts-loader":"^8.0.0","typescript":"^3.8.3","webpack":"^5.21.2","webpack-cli":"^4.0.0"},"files":["build/src","!build/src/**/*.map"],"scripts":{"test":"c8 mocha build/test","clean":"gts clean","prepare":"npm run compile","lint":"gts check","compile":"tsc -p .","fix":"gts fix","pretest":"npm run compile","docs":"compodoc src/","samples-setup":"cd samples/ && npm link ../ && npm run setup && cd ../","samples-test":"cd samples/ && npm link ../ && npm test && cd ../","system-test":"mocha build/system-test --timeout 60000","presystem-test":"npm run compile","webpack":"webpack","browser-test":"karma start","docs-test":"linkinator docs","predocs-test":"npm run docs","prelint":"cd samples; npm link ../; npm install","precompile":"gts clean"},"license":"Apache-2.0","_resolved":"https://registry.npmjs.org/google-auth-library/-/google-auth-library-7.3.0.tgz","_integrity":"sha512-MPeeMlnsYnoiiVFMwX3hgaS684aiXrSqKoDP+xL4Ejg4Z0qLvIeg4XsaChemyFI8ZUO7ApwDAzNtgmhWSDNh5w==","_from":"google-auth-library@7.3.0"};
+module.exports = {"name":"google-auth-library","version":"7.5.0","author":"Google Inc.","description":"Google APIs Authentication Client Library for Node.js","engines":{"node":">=10"},"main":"./build/src/index.js","types":"./build/src/index.d.ts","repository":"googleapis/google-auth-library-nodejs.git","keywords":["google","api","google apis","client","client library"],"dependencies":{"arrify":"^2.0.0","base64-js":"^1.3.0","ecdsa-sig-formatter":"^1.0.11","fast-text-encoding":"^1.0.0","gaxios":"^4.0.0","gcp-metadata":"^4.2.0","gtoken":"^5.0.4","jws":"^4.0.0","lru-cache":"^6.0.0"},"devDependencies":{"@compodoc/compodoc":"^1.1.7","@types/base64-js":"^1.2.5","@types/chai":"^4.1.7","@types/jws":"^3.1.0","@types/lru-cache":"^5.0.0","@types/mocha":"^8.0.0","@types/mv":"^2.1.0","@types/ncp":"^2.0.1","@types/node":"^14.0.0","@types/sinon":"^10.0.0","@types/tmp":"^0.2.0","assert-rejects":"^1.0.0","c8":"^7.0.0","chai":"^4.2.0","codecov":"^3.0.2","execa":"^5.0.0","gts":"^2.0.0","is-docker":"^2.0.0","karma":"^6.0.0","karma-chrome-launcher":"^3.0.0","karma-coverage":"^2.0.0","karma-firefox-launcher":"^2.0.0","karma-mocha":"^2.0.0","karma-remap-coverage":"^0.1.5","karma-sourcemap-loader":"^0.3.7","karma-webpack":"^5.0.0","keypair":"^1.0.1","linkinator":"^2.0.0","mocha":"^8.0.0","mv":"^2.1.1","ncp":"^2.0.0","nock":"^13.0.0","null-loader":"^4.0.0","puppeteer":"^10.0.0","sinon":"^11.0.0","tmp":"^0.2.0","ts-loader":"^8.0.0","typescript":"^3.8.3","webpack":"^5.21.2","webpack-cli":"^4.0.0"},"files":["build/src","!build/src/**/*.map"],"scripts":{"test":"c8 mocha build/test","clean":"gts clean","prepare":"npm run compile","lint":"gts check","compile":"tsc -p .","fix":"gts fix","pretest":"npm run compile","docs":"compodoc src/","samples-setup":"cd samples/ && npm link ../ && npm run setup && cd ../","samples-test":"cd samples/ && npm link ../ && npm test && cd ../","system-test":"mocha build/system-test --timeout 60000","presystem-test":"npm run compile","webpack":"webpack","browser-test":"karma start","docs-test":"linkinator docs","predocs-test":"npm run docs","prelint":"cd samples; npm link ../; npm install","precompile":"gts clean"},"license":"Apache-2.0","_resolved":"https://registry.npmjs.org/google-auth-library/-/google-auth-library-7.5.0.tgz","_integrity":"sha512-iRMwc060kiA6ncZbAoQN90nlwT8jiHVmippofpMgo4YFEyRBaPouyM7+ZB742wKetByyy+TahshVRTx0tEyXGQ==","_from":"google-auth-library@7.5.0"};
 
 /***/ }),
 
