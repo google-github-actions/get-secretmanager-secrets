@@ -23,7 +23,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@actions/core": "^1.4.0",
-    "google-auth-library": "^7.5.0"
+    "google-auth-library": "^7.6.1"
   },
   "devDependencies": {
     "@types/chai": "^4.2.21",
