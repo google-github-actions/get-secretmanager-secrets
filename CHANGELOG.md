@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.2.3](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.2...v0.2.3) (2021-11-11)
+
+
+### Bug Fixes
+
+* set correct link to setup-gcloud ([#15](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/15)) ([5198448](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/5198448f1d02ed8e708bc31ac6c24be6790b7048))
+
 ### [0.2.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.1...v0.2.2) (2021-03-05)
 
 
