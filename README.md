@@ -38,8 +38,13 @@ later steps.
 
 ```yaml
 steps:
+- id: auth
+  uses: google-github-actions/auth@v0.4.0
+  with:
+    workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+    service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
 - id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@main
+  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
   with:
     secrets: |-
       token:my-project/docker-registry-token
@@ -82,10 +87,9 @@ steps:
     <project-id>/<secret-id>
     ```
 
--   `credentials`: (Optional) [Google Service Account JSON][sa] credentials,
-    typically sourced from a [GitHub Secret][gh-secret]. If unspecified, other
-    authentication methods are attempted.
-
+- `credentials`: (**Deprecated**) This input is deprecated. See [auth section](https://github.com/google-github-actions/get-secretmanager-secrets#via-google-github-actionsauth) for more details.
+  [Google Service Account JSON][sa] credentials,
+  typically sourced from a [GitHub Secret][gh-secret].
 
 ## Outputs
 
@@ -118,37 +122,42 @@ will be available in future steps as the output "token":
 There are a few ways to authenticate this action. The caller must have
 permissions to access the secrets being requested.
 
-### Via the setup-gcloud action
+### Via google-github-actions/auth
 
-You can provide credentials using the [setup-gcloud][setup-gcloud] action:
+Use [google-github-actions/auth](https://github.com/google-github-actions/auth) to authenticate the action. You can use [Workload Identity Federation][wif] or traditional [Service Account Key JSON][sa] authentication.
+by specifying the `credentials` input. This Action supports both the recommended [Workload Identity Federation][wif] based authentication and the traditional [Service Account Key JSON][sa] based auth.
+
+See [usage](https://github.com/google-github-actions/auth#usage) for more details.
+
+#### Authenticating via Workload Identity Federation
 
 ```yaml
-- uses: google-github-actions/setup-gcloud@master
+- uses: actions/checkout@v2
+- id: auth
+  uses: google-github-actions/auth@v0.4.0
   with:
-    project_id: ${{ env.PROJECT_ID}}
-    service_account_key: ${{ secrets.GCP_SA_KEY }}
-    export_default_credentials: true
-- uses: google-github-actions/get-secretmanager-secrets@main
+    workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+    service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
+- id: secrets
+  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
+  with:
+    secrets: |-
+      token:my-project/docker-registry-token
 ```
 
-The advantage of this approach is that it authenticates all future actions. A
-disadvantage of this approach is that downloading and installing gcloud may be
-heavy for some use cases.
-
-### Via credentials
-
-You can provide [Google Cloud Service Account JSON][sa] directly to the action
-by specifying the `credentials` input. First, create a [GitHub
-Secret][gh-secret] that contains the JSON content, then import it into the
-action:
+#### Authenticating via Service Account Key JSON
 
 ```yaml
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@main
+- uses: actions/checkout@v2
+- id: auth
+  uses: google-github-actions/auth@v0.4.0
   with:
-    credentials: ${{ secrets.gcp_credentials }}
+    credentials_json: ${{ secrets.gcp_credentials }}
+- id: secrets
+  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
+  with:
     secrets: |-
-      # ...
+      token:my-project/docker-registry-token
 ```
 
 ### Via Application Default Credentials
@@ -168,6 +177,7 @@ Credentials.
 
 
 [sm]: https://cloud.google.com/secret-manager
+[wif]: https://cloud.google.com/iam/docs/workload-identity-federation
 [sa]: https://cloud.google.com/iam/docs/creating-managing-service-accounts
 [gh-runners]: https://help.github.com/en/actions/hosting-your-own-runners/about-self-hosted-runners
 [gh-secret]: https://help.github.com/en/actions/configuring-and-managing-workflows/creating-and-storing-encrypted-secrets
