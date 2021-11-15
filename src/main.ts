@@ -48,6 +48,15 @@ async function run(): Promise<void> {
     // Get credentials, if any.
     const credentials = core.getInput('credentials');
 
+    // Add warning if using credentials
+    if (credentials) {
+      core.warning(
+        '"credentials" input has been deprecated. ' +
+          'Please switch to using google-github-actions/auth which supports both Workload Identity Federation and JSON Key authentication. ' +
+          'For more details, see https://github.com/google-github-actions/get-secretmanager-secrets#authorization',
+      );
+    }
+
     // Create an API client.
     const client = new Client({
       credentials: credentials,
