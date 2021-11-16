@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.2...v0.3.0) (2021-11-16)
+
+
+### Features
+
+* add WIF docs, add warning for credentials input ([#127](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/127)) ([a9e64a3](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/a9e64a3fa27b447fc2ee3fa5f52dea9faf1e6c18))
+
+
+### Bug Fixes
+
+* set correct link to setup-gcloud ([#15](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/15)) ([5198448](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/5198448f1d02ed8e708bc31ac6c24be6790b7048))
+
 ### [0.2.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.1...v0.2.2) (2021-03-05)
 
 
