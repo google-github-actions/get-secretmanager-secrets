@@ -28,7 +28,7 @@
   "devDependencies": {
     "@types/chai": "^4.2.21",
     "@types/mocha": "^9.0.0",
-    "@types/node": "^16.9.4",
+    "@types/node": "^16.11.10",
     "@typescript-eslint/eslint-plugin": "^4.31.0",
     "@typescript-eslint/parser": "^4.33.0",
     "@zeit/ncc": "^0.22.3",
