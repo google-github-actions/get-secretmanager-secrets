@@ -12,8 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: Get Secret Manager secrets
-author: GoogleCloudPlatform
+name: 'Get Secret Manager secrets'
+author: 'Google LLC'
 description: |-
   Get secrets from Google Secret Manager and make their results available as
   output variables.
@@ -31,6 +31,10 @@ inputs:
       value can be raw or base64-encoded.
     required: false
 
+branding:
+  icon: 'lock'
+  color: 'blue'
+
 runs:
-  using: node12
-  main: dist/index.js
+  using: 'node12'
+  main: 'dist/index.js'

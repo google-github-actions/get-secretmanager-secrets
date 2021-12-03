@@ -21,8 +21,7 @@ import { Client } from '../src/client';
 
 const credentials = process.env.TEST_GET_SECRETMANAGER_SECRETS_CREDENTIALS;
 
-const secretVersionRef =
-  process.env.TEST_GET_SECRETMANAGER_SECRETS_SECRET_VERSION_REF;
+const secretVersionRef = process.env.TEST_GET_SECRETMANAGER_SECRETS_SECRET_VERSION_REF;
 
 describe('Client', function () {
   it('initializes with JSON creds', function () {

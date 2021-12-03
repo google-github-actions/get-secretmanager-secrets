@@ -16,6 +16,10 @@
 
 import { GoogleAuth } from 'google-auth-library';
 
+// Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const { version: appVersion } = require('../package.json');
+
 /**
  * Available options to create the client.
  *
@@ -37,7 +41,7 @@ type ClientOptions = {
 export class Client {
   readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1beta1';
   readonly defaultScope = 'https://www.googleapis.com/auth/cloud-platform';
-  readonly userAgent = 'github-actions-get-secretmanager-secrets/0.1.0';
+  readonly userAgent = `github-actions-get-secretmanager-secrets/${appVersion}`;
 
   readonly auth: GoogleAuth;
   readonly endpoint: string;
