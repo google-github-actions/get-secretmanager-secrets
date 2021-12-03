@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import * as core from '@actions/core';
+import { getInput, warning as logWarning, setFailed, setOutput, setSecret } from '@actions/core';
 import { Client } from './client';
 import { Reference } from './reference';
 
@@ -43,14 +43,14 @@ function parseSecretsRefs(secretsInput: string): Reference[] {
 async function run(): Promise<void> {
   try {
     // Fetch the list of secrets provided by the user.
-    const secretsInput = core.getInput('secrets', { required: true });
+    const secretsInput = getInput('secrets', { required: true });
 
     // Get credentials, if any.
-    const credentials = core.getInput('credentials');
+    const credentials = getInput('credentials');
 
     // Add warning if using credentials
     if (credentials) {
-      core.warning(
+      logWarning(
         '"credentials" input has been deprecated. ' +
           'Please switch to using google-github-actions/auth which supports both Workload Identity Federation and JSON Key authentication. ' +
           'For more details, see https://github.com/google-github-actions/get-secretmanager-secrets#authorization',
@@ -71,12 +71,12 @@ async function run(): Promise<void> {
 
       // Split multiline secrets by line break and mask each line.
       // Read more here: https://github.com/actions/runner/issues/161
-      value.split(/\r\n|\r|\n/g).forEach((line) => core.setSecret(line));
+      value.split(/\r\n|\r|\n/g).forEach((line) => setSecret(line));
 
-      core.setOutput(ref.output, value);
+      setOutput(ref.output, value);
     }
-  } catch (error) {
-    core.setFailed(error.message);
+  } catch (err) {
+    setFailed(`google-github-actions/get-secretmanager-secrets failed with: ${err}`);
   }
 }
 

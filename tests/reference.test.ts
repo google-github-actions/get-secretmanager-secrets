@@ -46,9 +46,7 @@ describe('Reference', function () {
 
   it('errors on invalid format', function () {
     const fn = (): Reference => {
-      return new Reference(
-        'out:projects/fruits/secrets/apple/versions/123/subversions/5',
-      );
+      return new Reference('out:projects/fruits/secrets/apple/versions/123/subversions/5');
     };
     expect(fn).to.throw(TypeError);
   });
