@@ -32,6 +32,15 @@ jobs:
     - name: 'npm build'
       run: 'npm ci && npm run build'
 
+    - name: 'verify compiled'
+      shell: 'bash'
+      run: |-
+        if [ -n "$(git status --porcelain)" ]; then
+          echo "TypeScript is not compiled!"
+          git diff
+          exit 1
+        fi
+
     - name: 'npm lint'
       # There's no need to run the linter for each operating system, since it
       # will find the same thing 3x and clog up the PR review.
