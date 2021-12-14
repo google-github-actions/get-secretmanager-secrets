@@ -37,23 +37,30 @@ later steps.
 ## Usage
 
 ```yaml
-steps:
-- id: auth
-  uses: google-github-actions/auth@v0.4.0
-  with:
-    workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
-    service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
-  with:
-    secrets: |-
-      token:my-project/docker-registry-token
+jobs:
+  job_id:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
 
-# Example of using the output
-- id: publish
-  uses: foo/bar@master
-  env:
-    TOKEN: ${{ steps.secrets.outputs.token }}
+    steps:
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+        service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
+
+    - id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      with:
+        secrets: |-
+          token:my-project/docker-registry-token
+
+    # Example of using the output
+    - id: 'publish'
+      uses: 'foo/bar@master'
+      env:
+        TOKEN: '${{ steps.secrets.outputs.token }}'
 ```
 
 
@@ -99,21 +106,24 @@ will be available at that output in future build steps.
 For example:
 
 ```yaml
-steps:
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@main
-  with:
-    secrets: |-
-      token:my-project/docker-registry-token
+jobs:
+  job_id:
+    steps:
+    - id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      with:
+        secrets: |-
+          token:my-project/docker-registry-token
 ```
 
 will be available in future steps as the output "token":
 
 ```yaml
-- id: publish
-  uses: foo/bar@master
+# other step
+- id: 'publish'
+  uses: 'foo/bar@master'
   env:
-    TOKEN: ${{ steps.secrets.outputs.token }}
+    TOKEN: '${{ steps.secrets.outputs.token }}'
 ```
 
 
@@ -132,32 +142,46 @@ See [usage](https://github.com/google-github-actions/auth#usage) for more detail
 #### Authenticating via Workload Identity Federation
 
 ```yaml
-- uses: actions/checkout@v2
-- id: auth
-  uses: google-github-actions/auth@v0.4.0
-  with:
-    workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
-    service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
-  with:
-    secrets: |-
-      token:my-project/docker-registry-token
+jobs:
+  job_id:
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+    - uses: 'actions/checkout@v2'
+
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+        service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
+
+    - id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      with:
+        secrets: |-
+          token:my-project/docker-registry-token
 ```
 
 #### Authenticating via Service Account Key JSON
 
 ```yaml
-- uses: actions/checkout@v2
-- id: auth
-  uses: google-github-actions/auth@v0.4.0
-  with:
-    credentials_json: ${{ secrets.gcp_credentials }}
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@v0.2.2
-  with:
-    secrets: |-
-      token:my-project/docker-registry-token
+jobs:
+  job_id:
+    steps:
+    - uses: 'actions/checkout@v2'
+
+    - id: 'auth'
+      uses: 'google-github-actions/auth@v0'
+      with:
+        credentials_json: '${{ secrets.gcp_credentials }}'
+
+    - id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      with:
+        secrets: |-
+          token:my-project/docker-registry-token
 ```
 
 ### Via Application Default Credentials
@@ -168,8 +192,11 @@ authenticate requests as the service account attached to the instance. **This
 only works using a custom runner hosted on GCP.**
 
 ```yaml
-- id: secrets
-  uses: google-github-actions/get-secretmanager-secrets@main
+jobs:
+  job_id:
+    steps:
+    - id: 'secrets'
+      uses: 'google-github-actions/get-secretmanager-secrets@v0'
 ```
 
 The action will automatically detect and use the Application Default
