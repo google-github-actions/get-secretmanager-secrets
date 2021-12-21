@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.3.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.2...v0.3.2) (2021-12-21)
+
+
+### Miscellaneous Chores
+
+* release 0.3.2 ([0ee7f50](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/0ee7f504f8b3900a451ed25f030589fe787d5972))
+
 ### [0.3.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.0...v0.3.2) (2021-12-21)
 
 
