@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.3.1](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.0...v0.3.1) (2021-12-21)
+
+
+### Bug Fixes
+
+* update deps ([cd147f4](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/cd147f43edbbdea7e395556b98bcec802eb88701))
+
 ## [0.3.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.2.2...v0.3.0) (2021-11-16)
 
 
