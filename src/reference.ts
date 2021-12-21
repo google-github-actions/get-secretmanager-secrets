@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import { parseCSV } from '@google-github-actions/actions-utils';
+
 /**
  * Parses a string of the format `outout:secret`. For example:
  *
@@ -84,4 +86,23 @@ export class Reference {
   public selfLink(): string {
     return `projects/${this.project}/secrets/${this.name}/versions/${this.version}`;
   }
+}
+
+/**
+ * Accepts the actions list of secrets and parses them as References.
+ *
+ * @param input List of secrets, from the actions input, can be
+ * comma-delimited or newline, whitespace around secret entires is removed.
+ * @returns Array of References for each secret, in the same order they were
+ * given.
+ */
+export function parseSecretsRefs(input: string): Reference[] {
+  const secrets: Reference[] = [];
+  for (const line of input.split(/\r|\n/)) {
+    const pieces = parseCSV(line);
+    for (const piece of pieces) {
+      secrets.push(new Reference(piece));
+    }
+  }
+  return secrets;
 }

@@ -23,6 +23,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@actions/core": "^1.6.0",
+    "@google-github-actions/actions-utils": "^0.1.0",
     "google-auth-library": "^7.11.0"
   },
   "devDependencies": {
