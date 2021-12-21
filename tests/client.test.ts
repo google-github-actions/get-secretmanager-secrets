@@ -36,13 +36,11 @@ describe('Client', function () {
     expect(client.auth.jsonContent).eql(null);
   });
 
-  it('accesses secret versions', async function () {
-    if (!credentials || !secretVersionRef) {
-      this.skip();
-    }
+  it('accesses secret versions with JSON creds', async function () {
+    if (!credentials || !secretVersionRef) this.skip();
 
     const client = new Client({ credentials: credentials });
     const result = await client.accessSecret(secretVersionRef);
-    expect(result).to.not.eql(null);
+    expect(result).to.be;
   });
 });

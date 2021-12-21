@@ -39,7 +39,7 @@ type ClientOptions = {
  * @returns Client
  */
 export class Client {
-  readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1beta1';
+  readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1';
   readonly defaultScope = 'https://www.googleapis.com/auth/cloud-platform';
   readonly userAgent = `github-actions-get-secretmanager-secrets/${appVersion}`;
 
@@ -66,7 +66,6 @@ export class Client {
     } else {
       this.auth = new GoogleAuth({
         scopes: [this.defaultScope],
-        projectId: 'unused-but-required',
       });
     }
   }
