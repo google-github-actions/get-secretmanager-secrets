@@ -15,10 +15,19 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
+import {
+  Credential,
+  errorMessage,
+  fromBase64,
+  request,
+} from '@google-github-actions/actions-utils';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: appVersion } = require('../package.json');
+
+// userAgent is the user agent string.
+const userAgent = `github-actions-get-secretmanager-secrets/${appVersion}`;
 
 /**
  * Available options to create the client.
@@ -27,7 +36,7 @@ const { version: appVersion } = require('../package.json');
  * @param endpoint GCP endpoint (useful for testing).
  */
 type ClientOptions = {
-  credentials?: string;
+  credentials?: Credential;
   endpoint?: string;
 };
 
@@ -41,33 +50,16 @@ type ClientOptions = {
 export class Client {
   readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1';
   readonly defaultScope = 'https://www.googleapis.com/auth/cloud-platform';
-  readonly userAgent = `github-actions-get-secretmanager-secrets/${appVersion}`;
 
   readonly auth: GoogleAuth;
   readonly endpoint: string;
 
   constructor(opts?: ClientOptions) {
     this.endpoint = opts?.endpoint || this.defaultEndpoint;
-
-    if (opts?.credentials) {
-      // If the credentials are not JSON, they are probably base64-encoded. Even
-      // though we don't instruct users to provide base64-encoded credentials,
-      // sometimes they still do.
-      if (!opts.credentials.trim().startsWith('{')) {
-        const creds = opts.credentials;
-        opts.credentials = Buffer.from(creds, 'base64').toString('utf8');
-      }
-
-      const creds = JSON.parse(opts.credentials);
-      this.auth = new GoogleAuth({
-        scopes: [this.defaultScope],
-        credentials: creds,
-      });
-    } else {
-      this.auth = new GoogleAuth({
-        scopes: [this.defaultScope],
-      });
-    }
+    this.auth = new GoogleAuth({
+      scopes: [this.defaultScope],
+      credentials: opts?.credentials,
+    });
   }
 
   /**
@@ -78,39 +70,28 @@ export class Client {
    */
   async accessSecret(ref: string): Promise<string> {
     if (!ref) {
-      throw new Error(`Secret ref ${ref} is empty!`);
+      throw new Error(`Secret ref "${ref}" is empty!`);
     }
 
-    const client = await this.auth.getClient();
+    try {
+      const token = await this.auth.getAccessToken();
+      const response = await request('GET', `${this.endpoint}/${ref}:access`, null, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'User-Agent': userAgent,
+        },
+      });
 
-    const headers = await client.getRequestHeaders();
-    headers['User-Agent'] = this.userAgent;
+      const parsed = JSON.parse(response);
+      const b64data = parsed?.payload?.data;
+      if (!b64data) {
+        throw new Error(`Secret "${ref}" returned no data!`);
+      }
 
-    const url = `${this.endpoint}/${ref}:access`;
-    const resp = (await client.request({
-      url: url,
-      headers: headers,
-    })) as PayloadResponse;
-
-    const b64data = resp?.data?.payload?.data;
-    if (!b64data) {
-      throw new Error(`Secret ${ref} returned no data!`);
+      return fromBase64(b64data);
+    } catch (err) {
+      const msg = errorMessage(err);
+      throw new Error(`Failed to access secret "${ref}": ${msg}`);
     }
-
-    const data = Buffer.from(b64data, 'base64');
-    return data.toString();
   }
 }
-
-/**
- * PayloadResponse is the deeply-nested response from the Secret Manager API. It
- * is primarily used for processing the response.
- */
-type PayloadResponse = {
-  data: {
-    name: string;
-    payload: {
-      data: string;
-    };
-  };
-};

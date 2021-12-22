@@ -15,26 +15,10 @@
  */
 
 import { getInput, warning as logWarning, setFailed, setOutput, setSecret } from '@actions/core';
-import { Client } from './client';
-import { Reference } from './reference';
+import { Credential, parseCredential, errorMessage } from '@google-github-actions/actions-utils';
 
-/**
- * Accepts the actions list of secrets and parses them as References.
- *
- * @param secretsInput List of secrets, from the actions input, can be
- * comma-delimited or newline, whitespace around secret entires is removed.
- * @returns Array of References for each secret, in the same order they were
- * given.
- */
-function parseSecretsRefs(secretsInput: string): Reference[] {
-  const secrets = new Array<Reference>();
-  for (const line of secretsInput.split(`\n`)) {
-    for (const piece of line.split(',')) {
-      secrets.push(new Reference(piece.trim()));
-    }
-  }
-  return secrets;
-}
+import { Client } from './client';
+import { parseSecretsRefs } from './reference';
 
 /**
  * Executes the main action. It includes the main business logic and is the
@@ -49,17 +33,19 @@ async function run(): Promise<void> {
     const credentials = getInput('credentials');
 
     // Add warning if using credentials
+    let credentialsJSON: Credential | undefined;
     if (credentials) {
       logWarning(
-        '"credentials" input has been deprecated. ' +
+        'The "credentials" input is deprecated. ' +
           'Please switch to using google-github-actions/auth which supports both Workload Identity Federation and JSON Key authentication. ' +
           'For more details, see https://github.com/google-github-actions/get-secretmanager-secrets#authorization',
       );
+      credentialsJSON = parseCredential(credentials);
     }
 
     // Create an API client.
     const client = new Client({
-      credentials: credentials,
+      credentials: credentialsJSON,
     });
 
     // Parse all the provided secrets into references.
@@ -76,7 +62,8 @@ async function run(): Promise<void> {
       setOutput(ref.output, value);
     }
   } catch (err) {
-    setFailed(`google-github-actions/get-secretmanager-secrets failed with: ${err}`);
+    const msg = errorMessage(err);
+    setFailed(`google-github-actions/get-secretmanager-secrets failed with: ${msg}`);
   }
 }
 
