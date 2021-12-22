@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.2...v0.4.0) (2021-12-22)
+
+
+### Features
+
+* switch to using actions-utils ([#164](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/164)) ([f5b3b81](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/f5b3b81ba32bc04178d46f13c474b6103f702584))
+
 ### [0.3.2](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.0...v0.3.2) (2021-12-21)
 
 
