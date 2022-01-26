@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.4.1...v0.5.0) (2022-01-26)
+
+
+### Features
+
+* switch to running as node v16 ([#189](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/189)) ([3496e55](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/3496e55a9a37020bcc47d439003e33f420d2d0e7))
+
 ### [0.4.1](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.4.0...v0.4.1) (2022-01-26)
 
 
