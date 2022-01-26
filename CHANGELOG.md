@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.4.1](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.4.0...v0.4.1) (2022-01-26)
+
+
+### Miscellaneous Chores
+
+* release 0.4.1 ([b51c51d](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/b51c51d1a9115b60e0c9fec5c369b46ece341b77))
+
 ## [0.4.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.3.2...v0.4.0) (2021-12-22)
 
 
