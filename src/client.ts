@@ -15,12 +15,8 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
-import {
-  Credential,
-  errorMessage,
-  fromBase64,
-  request,
-} from '@google-github-actions/actions-utils';
+import { Credential, errorMessage, fromBase64 } from '@google-github-actions/actions-utils';
+import { HttpClient } from '@actions/http-client';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -41,6 +37,17 @@ type ClientOptions = {
 };
 
 /**
+ * AccessSecretVersionResponse is the response from the API for accessing a
+ * secret version.
+ */
+type AccessSecretVersionResponse = {
+  payload: {
+    // data is base64 encoded data.
+    data: string;
+  };
+};
+
+/**
  * Wraps interactions with the Google Secret Manager API, handling credential
  * lookup and registration.
  *
@@ -53,6 +60,7 @@ export class Client {
 
   readonly auth: GoogleAuth;
   readonly endpoint: string;
+  readonly client: HttpClient;
 
   constructor(opts?: ClientOptions) {
     this.endpoint = opts?.endpoint || this.defaultEndpoint;
@@ -60,6 +68,7 @@ export class Client {
       scopes: [this.defaultScope],
       credentials: opts?.credentials,
     });
+    this.client = new HttpClient(userAgent);
   }
 
   /**
@@ -75,15 +84,19 @@ export class Client {
 
     try {
       const token = await this.auth.getAccessToken();
-      const response = await request('GET', `${this.endpoint}/${ref}:access`, null, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'User-Agent': userAgent,
-        },
+      const response = await this.client.get(`${this.endpoint}/${ref}:access`, {
+        'Authorization': `Bearer ${token}`,
+        'User-Agent': userAgent,
       });
 
-      const parsed = JSON.parse(response);
-      const b64data = parsed?.payload?.data;
+      const body = await response.readBody();
+      const statusCode = response.message.statusCode || 500;
+      if (statusCode >= 400) {
+        throw new Error(`(${statusCode}) ${body}`);
+      }
+
+      const parsed: AccessSecretVersionResponse = JSON.parse(body);
+      const b64data = parsed.payload.data;
       if (!b64data) {
         throw new Error(`Secret "${ref}" returned no data!`);
       }
