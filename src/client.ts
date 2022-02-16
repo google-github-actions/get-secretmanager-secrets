@@ -23,7 +23,7 @@ import { HttpClient } from '@actions/http-client';
 const { version: appVersion } = require('../package.json');
 
 // userAgent is the user agent string.
-const userAgent = `github-actions-get-secretmanager-secrets/${appVersion}`;
+const userAgent = `google-github-actions:get-secretmanager-secrets/${appVersion}`;
 
 /**
  * Available options to create the client.
