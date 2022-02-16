@@ -1,5 +1,12 @@
 # Changelog
 
+### [0.5.1](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.5.0...v0.5.1) (2022-02-16)
+
+
+### Bug Fixes
+
+* Update user-agent header to match other actions ([#204](https://www.github.com/google-github-actions/get-secretmanager-secrets/issues/204)) ([a940f66](https://www.github.com/google-github-actions/get-secretmanager-secrets/commit/a940f6649acc01ad630661fffcd02f3fc663f973))
+
 ## [0.5.0](https://www.github.com/google-github-actions/get-secretmanager-secrets/compare/v0.4.1...v0.5.0) (2022-01-26)
 
 
