@@ -33,6 +33,9 @@ later steps.
     the secrets being requested. See the Authorization section below for more
     information.
 
+-   This action runs using Node 16. If you are using self-hosted GitHub Actions
+    runners, you must use runner version [2.285.0](https://github.com/actions/virtual-environments)
+    or newer.
 
 ## Usage
 
@@ -149,7 +152,7 @@ jobs:
       id-token: 'write'
 
     steps:
-    - uses: 'actions/checkout@v2'
+    - uses: 'actions/checkout@v3'
 
     - id: 'auth'
       uses: 'google-github-actions/auth@v0'
@@ -170,7 +173,7 @@ jobs:
 jobs:
   job_id:
     steps:
-    - uses: 'actions/checkout@v2'
+    - uses: 'actions/checkout@v3'
 
     - id: 'auth'
       uses: 'google-github-actions/auth@v0'
