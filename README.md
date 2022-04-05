@@ -61,7 +61,7 @@ jobs:
 
     # Example of using the output
     - id: 'publish'
-      uses: 'foo/bar@master'
+      uses: 'foo/bar@main'
       env:
         TOKEN: '${{ steps.secrets.outputs.token }}'
 ```
@@ -124,7 +124,7 @@ will be available in future steps as the output "token":
 ```yaml
 # other step
 - id: 'publish'
-  uses: 'foo/bar@master'
+  uses: 'foo/bar@main'
   env:
     TOKEN: '${{ steps.secrets.outputs.token }}'
 ```
