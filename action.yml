@@ -30,6 +30,12 @@ inputs:
       formatted private key which can be exported from the Cloud Console. The
       value can be raw or base64-encoded.
     required: false
+  enable-mask:
+    description: |-
+      Using for control adding mask for secrets
+    required: true
+    type: boolean
+    default: true
 
 branding:
   icon: 'lock'

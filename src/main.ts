@@ -14,7 +14,14 @@
  * limitations under the License.
  */
 
-import { getInput, warning as logWarning, setFailed, setOutput, setSecret } from '@actions/core';
+import {
+  getInput,
+  getBooleanInput,
+  warning as logWarning,
+  setFailed,
+  setOutput,
+  setSecret,
+} from '@actions/core';
 import { Credential, parseCredential, errorMessage } from '@google-github-actions/actions-utils';
 
 import { Client } from './client';
@@ -28,6 +35,9 @@ async function run(): Promise<void> {
   try {
     // Fetch the list of secrets provided by the user.
     const secretsInput = getInput('secrets', { required: true });
+
+    // Flag for control adding mask for secrets
+    const enableMaskInput = getBooleanInput('enable-mask', { required: true });
 
     // Get credentials, if any.
     const credentials = getInput('credentials');
@@ -55,9 +65,11 @@ async function run(): Promise<void> {
     for (const ref of secretsRefs) {
       const value = await client.accessSecret(ref.selfLink());
 
-      // Split multiline secrets by line break and mask each line.
-      // Read more here: https://github.com/actions/runner/issues/161
-      value.split(/\r\n|\r|\n/g).forEach((line) => setSecret(line));
+      if (enableMaskInput) {
+        // Split multiline secrets by line break and mask each line.
+        // Read more here: https://github.com/actions/runner/issues/161
+        value.split(/\r\n|\r|\n/g).forEach((line) => setSecret(line));
+      }
 
       setOutput(ref.output, value);
     }
