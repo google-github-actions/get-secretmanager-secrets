@@ -1,4 +1,4 @@
-name: 'unit'
+name: 'Unit'
 
 on:
   push:
@@ -16,7 +16,6 @@ concurrency:
 jobs:
   run:
     name: 'unit'
-    runs-on: '${{ matrix.os }}'
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +23,8 @@ jobs:
         - 'ubuntu-latest'
         - 'windows-latest'
         - 'macos-latest'
+    runs-on: '${{ matrix.os }}'
+
     steps:
     - uses: 'actions/checkout@v3'
 

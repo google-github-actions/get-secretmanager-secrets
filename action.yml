@@ -30,6 +30,14 @@ inputs:
       formatted private key which can be exported from the Cloud Console. The
       value can be raw or base64-encoded.
     required: false
+  min_mask_length:
+    description: |-
+      Minimum line length for a secret to be masked. Extremely short secrets
+      (e.g. "{" or "a") can make GitHub Actions log output unreadable. This is
+      especially important for multi-line secrets, since each line of the secret
+      is masked independently.
+    required: false
+    default: '4'
 
 branding:
   icon: 'lock'
