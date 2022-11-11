@@ -32,6 +32,9 @@ async function run(): Promise<void> {
     // Get credentials, if any.
     const credentials = getInput('credentials');
 
+    // Get the minimum mask length.
+    const minMaskLength = parseInt(getInput('min_mask_length'));
+
     // Add warning if using credentials
     let credentialsJSON: Credential | undefined;
     if (credentials) {
@@ -57,7 +60,14 @@ async function run(): Promise<void> {
 
       // Split multiline secrets by line break and mask each line.
       // Read more here: https://github.com/actions/runner/issues/161
-      value.split(/\r\n|\r|\n/g).forEach((line) => setSecret(line));
+      value.split(/\r\n|\r|\n/g).forEach((line) => {
+        // Only mask sufficiently long values. There's a risk in masking
+        // extremely short values in that it will make output completely
+        // unreadable.
+        if (line && line.length >= minMaskLength) {
+          setSecret(line);
+        }
+      });
 
       setOutput(ref.output, value);
     }
@@ -67,4 +77,6 @@ async function run(): Promise<void> {
   }
 }
 
-run();
+if (require.main === module) {
+  run();
+}
