@@ -38,7 +38,7 @@ jobs:
         service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
 
     - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      uses: 'google-github-actions/get-secretmanager-secrets@v1'
       with:
         secrets: |-
           token:my-project/docker-registry-token
@@ -99,7 +99,7 @@ jobs:
   job_id:
     steps:
     - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      uses: 'google-github-actions/get-secretmanager-secrets@v1'
       with:
         secrets: |-
           token:my-project/docker-registry-token
@@ -144,7 +144,7 @@ jobs:
         service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
 
     - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      uses: 'google-github-actions/get-secretmanager-secrets@v1'
 ```
 
 ### Via Application Default Credentials
@@ -159,7 +159,7 @@ jobs:
   job_id:
     steps:
     - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v0'
+      uses: 'google-github-actions/get-secretmanager-secrets@v1'
 ```
 
 The action will automatically detect and use the Application Default
