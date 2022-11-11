@@ -15,7 +15,7 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
-import { Credential, errorMessage, fromBase64 } from '@google-github-actions/actions-utils';
+import { errorMessage, fromBase64 } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
@@ -28,11 +28,9 @@ const userAgent = `google-github-actions:get-secretmanager-secrets/${appVersion}
 /**
  * Available options to create the client.
  *
- * @param credentials GCP JSON credentials (default uses ADC).
  * @param endpoint GCP endpoint (useful for testing).
  */
 type ClientOptions = {
-  credentials?: Credential;
   endpoint?: string;
 };
 
@@ -66,7 +64,6 @@ export class Client {
     this.endpoint = opts?.endpoint || this.defaultEndpoint;
     this.auth = new GoogleAuth({
       scopes: [this.defaultScope],
-      credentials: opts?.credentials,
     });
     this.client = new HttpClient(userAgent);
   }
