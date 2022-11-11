@@ -14,12 +14,12 @@ later steps.
 ## Prerequisites
 
 -   This action requires Google Cloud credentials that are authorized to access
-    the secrets being requested. See the Authorization section below for more
+    the secrets being requested. See [Authorization](#authorization) for more
     information.
 
 -   This action runs using Node 16. If you are using self-hosted GitHub Actions
-    runners, you must use runner version [2.285.0](https://github.com/actions/virtual-environments)
-    or newer.
+    runners, you must use runner version
+    [2.285.0](https://github.com/actions/virtual-environments) or newer.
 
 ## Usage
 
@@ -32,7 +32,7 @@ jobs:
 
     steps:
     - id: 'auth'
-      uses: 'google-github-actions/auth@v0'
+      uses: 'google-github-actions/auth@v1'
       with:
         workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
         service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
@@ -86,9 +86,6 @@ jobs:
   Actions log output unreadable. This is especially important for multi-line
   secrets, since each line of the secret is masked independently.
 
-- `credentials`: (**Deprecated**) This input is deprecated. See [auth section](https://github.com/google-github-actions/get-secretmanager-secrets#via-google-github-actionsauth) for more details.
-  [Google Service Account JSON][sa] credentials,
-  typically sourced from a [GitHub Secret][gh-secret].
 
 ## Outputs
 
@@ -126,12 +123,9 @@ permissions to access the secrets being requested.
 
 ### Via google-github-actions/auth
 
-Use [google-github-actions/auth](https://github.com/google-github-actions/auth) to authenticate the action. You can use [Workload Identity Federation][wif] or traditional [Service Account Key JSON][sa] authentication.
-by specifying the `credentials` input. This Action supports both the recommended [Workload Identity Federation][wif] based authentication and the traditional [Service Account Key JSON][sa] based auth.
-
-See [usage](https://github.com/google-github-actions/auth#usage) for more details.
-
-#### Authenticating via Workload Identity Federation
+Use [google-github-actions/auth](https://github.com/google-github-actions/auth)
+to authenticate the action. You can use [Workload Identity Federation][wif] or
+traditional [Service Account Key JSON][sa] authentication.
 
 ```yaml
 jobs:
@@ -144,36 +138,13 @@ jobs:
     - uses: 'actions/checkout@v3'
 
     - id: 'auth'
-      uses: 'google-github-actions/auth@v0'
+      uses: 'google-github-actions/auth@v1'
       with:
         workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
         service_account: 'my-service-account@my-project.iam.gserviceaccount.com'
 
     - id: 'secrets'
       uses: 'google-github-actions/get-secretmanager-secrets@v0'
-      with:
-        secrets: |-
-          token:my-project/docker-registry-token
-```
-
-#### Authenticating via Service Account Key JSON
-
-```yaml
-jobs:
-  job_id:
-    steps:
-    - uses: 'actions/checkout@v3'
-
-    - id: 'auth'
-      uses: 'google-github-actions/auth@v0'
-      with:
-        credentials_json: '${{ secrets.gcp_credentials }}'
-
-    - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v0'
-      with:
-        secrets: |-
-          token:my-project/docker-registry-token
 ```
 
 ### Via Application Default Credentials

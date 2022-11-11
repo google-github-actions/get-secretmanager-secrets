@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-import { getInput, warning as logWarning, setFailed, setOutput, setSecret } from '@actions/core';
-import { Credential, parseCredential, errorMessage } from '@google-github-actions/actions-utils';
+import { getInput, setFailed, setOutput, setSecret } from '@actions/core';
+import { errorMessage } from '@google-github-actions/actions-utils';
 
 import { Client } from './client';
 import { parseSecretsRefs } from './reference';
@@ -29,27 +29,11 @@ async function run(): Promise<void> {
     // Fetch the list of secrets provided by the user.
     const secretsInput = getInput('secrets', { required: true });
 
-    // Get credentials, if any.
-    const credentials = getInput('credentials');
-
     // Get the minimum mask length.
     const minMaskLength = parseInt(getInput('min_mask_length'));
 
-    // Add warning if using credentials
-    let credentialsJSON: Credential | undefined;
-    if (credentials) {
-      logWarning(
-        'The "credentials" input is deprecated. ' +
-          'Please switch to using google-github-actions/auth which supports both Workload Identity Federation and JSON Key authentication. ' +
-          'For more details, see https://github.com/google-github-actions/get-secretmanager-secrets#authorization',
-      );
-      credentialsJSON = parseCredential(credentials);
-    }
-
     // Create an API client.
-    const client = new Client({
-      credentials: credentialsJSON,
-    });
+    const client = new Client();
 
     // Parse all the provided secrets into references.
     const secretsRefs = parseSecretsRefs(secretsInput);
