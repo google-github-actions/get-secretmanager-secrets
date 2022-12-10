@@ -24,7 +24,7 @@ jobs:
     steps:
     - uses: 'actions/checkout@v3'
 
-    - uses: 'actions/setup-node@v2'
+    - uses: 'actions/setup-node@v3'
       with:
         node-version: '16.x'
 
@@ -34,15 +34,15 @@ jobs:
     - uses: 'google-github-actions/auth@main'
       with:
         workload_identity_provider: '${{ secrets.WIF_PROVIDER_NAME }}'
-        service_account: '${{ secrets.WIF_SERVICE_ACCOUNT_EMAIL }}'
+        service_account: '${{ secrets.SERVICE_ACCOUNT_EMAIL }}'
 
     - id: 'secrets'
       name: 'secrets'
       uses: './'
       with:
         secrets: |-
-          token:${{ secrets.SECRET_REF }}
-          password:${{ secrets.SECRET_VERSION_REF }}
+          token:${{ secrets.SECRET_NAME }}
+          password:${{ secrets.SECRET_VERSION_NAME }}
 
     - name: 'outputs'
       run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}'
