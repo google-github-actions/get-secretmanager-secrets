@@ -33,16 +33,16 @@ jobs:
 
     - uses: 'google-github-actions/auth@main'
       with:
-        workload_identity_provider: '${{ secrets.WIF_PROVIDER_NAME }}'
-        service_account: '${{ secrets.SERVICE_ACCOUNT_EMAIL }}'
+        workload_identity_provider: '${{ vars.WIF_PROVIDER_NAME }}'
+        service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
 
     - id: 'secrets'
       name: 'secrets'
       uses: './'
       with:
         secrets: |-
-          token:${{ secrets.SECRET_NAME }}
-          password:${{ secrets.SECRET_VERSION_NAME }}
+          token:${{ vars.SECRET_NAME }}
+          password:${{ vars.SECRET_VERSION_NAME }}
 
     - name: 'outputs'
       run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}'
