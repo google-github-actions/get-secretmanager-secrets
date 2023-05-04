@@ -10,6 +10,11 @@ used in subsequent actions. After a secret is accessed, its value is added to
 the mask of the build to reduce the chance of it being printed or logged by
 later steps.
 
+**This is not an officially supported Google product, and it is not covered by a
+Google Cloud support contract. To report bugs or request features in a Google
+Cloud product, please contact [Google Cloud
+support](https://cloud.google.com/support).**
+
 
 ## Prerequisites
 
