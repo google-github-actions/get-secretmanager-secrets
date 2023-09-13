@@ -66,8 +66,8 @@ jobs:
 
     ```yaml
     secrets: |-
-      output1:my-project/my-secret1
-      output2:my-project/my-secret2
+      input1:my-project/my-secret1
+      input2:my-project/my-secret2
     ```
 
     Secrets can be referenced using the following formats:
