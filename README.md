@@ -22,9 +22,10 @@ support](https://cloud.google.com/support).**
     the secrets being requested. See [Authorization](#authorization) for more
     information.
 
--   This action runs using Node 16. If you are using self-hosted GitHub Actions
-    runners, you must use runner version
-    [2.285.0](https://github.com/actions/virtual-environments) or newer.
+-   This action runs using Node 20. If you are using self-hosted GitHub Actions
+    runners, you must use a [runner
+    version](https://github.com/actions/virtual-environments) that supports this
+    version or newer.
 
 ## Usage
 
@@ -140,7 +141,7 @@ jobs:
       id-token: 'write'
 
     steps:
-    - uses: 'actions/checkout@v3'
+    - uses: 'actions/checkout@v4'
 
     - id: 'auth'
       uses: 'google-github-actions/auth@v1'
