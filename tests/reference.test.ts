@@ -14,52 +14,50 @@
  * limitations under the License.
  */
 
-import 'mocha';
-import { expect } from 'chai';
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
 
 import { Reference, parseSecretsRefs } from '../src/reference';
 
-describe('Reference', () => {
-  it('parses a full ref', () => {
+describe('Reference', async () => {
+  it('parses a full ref', async () => {
     const ref = new Reference('out:projects/fruits/secrets/apple/versions/123');
     const link = ref.selfLink();
-    expect(link).equal('projects/fruits/secrets/apple/versions/123');
+    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
   });
 
-  it('parses a full ref sans version', () => {
+  it('parses a full ref sans version', async () => {
     const ref = new Reference('out:projects/fruits/secrets/apple');
     const link = ref.selfLink();
-    expect(link).equal('projects/fruits/secrets/apple/versions/latest');
+    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
   });
 
-  it('parses a short ref', () => {
+  it('parses a short ref', async () => {
     const ref = new Reference('out:fruits/apple/123');
     const link = ref.selfLink();
-    expect(link).equal('projects/fruits/secrets/apple/versions/123');
+    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
   });
 
-  it('parses a short ref sans version', () => {
+  it('parses a short ref sans version', async () => {
     const ref = new Reference('out:fruits/apple');
     const link = ref.selfLink();
-    expect(link).equal('projects/fruits/secrets/apple/versions/latest');
+    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
   });
 
-  it('errors on invalid format', () => {
-    const fn = (): Reference => {
+  it('errors on invalid format', async () => {
+    assert.rejects(async () => {
       return new Reference('out:projects/fruits/secrets/apple/versions/123/subversions/5');
-    };
-    expect(fn).to.throw(TypeError);
+    }, TypeError);
   });
 
-  it('errors on missing output', () => {
-    const fn = (): Reference => {
+  it('errors on missing output', async () => {
+    assert.rejects(async () => {
       return new Reference('fruits/apple/123');
-    };
-    expect(fn).to.throw(TypeError);
+    }, TypeError);
   });
 });
 
-describe('#parseSecretsRefs', () => {
+describe('#parseSecretsRefs', async () => {
   const cases = [
     {
       name: 'empty string',
@@ -113,13 +111,14 @@ describe('#parseSecretsRefs', () => {
   ];
 
   cases.forEach((tc) => {
-    it(tc.name, () => {
+    it(tc.name, async () => {
       if (tc.expected) {
-        expect(parseSecretsRefs(tc.input)).to.eql(tc.expected);
+        const actual = parseSecretsRefs(tc.input);
+        assert.deepStrictEqual(actual, tc.expected);
       } else if (tc.error) {
-        expect(() => {
+        assert.rejects(async () => {
           parseSecretsRefs(tc.input);
-        }).to.throw(tc.error);
+        }, tc.error);
       }
     });
   });
