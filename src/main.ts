@@ -14,7 +14,14 @@
  * limitations under the License.
  */
 
-import { getInput, warning as logWarning, setFailed, setOutput, setSecret } from '@actions/core';
+import {
+  error as logError,
+  getInput,
+  setFailed,
+  setOutput,
+  setSecret,
+  warning as logWarning,
+} from '@actions/core';
 import { Credential, parseCredential, errorMessage } from '@google-github-actions/actions-utils';
 
 import { Client } from './client';
@@ -25,6 +32,17 @@ import { parseSecretsRefs } from './reference';
  * primary entry point. It is documented inline.
  */
 async function run(): Promise<void> {
+  // v0 is deprecated and is no longer supported per our "two major versions"
+  // policy.
+  logError(
+    `The v0 series of google-github-actions/get-secretmanager-secrets is no ` +
+      `longer maintained. It will not receive updates, improvements, or ` +
+      `security patches. Please upgrade to the latest supported versions: ` +
+      `\n` +
+      `\n` +
+      `    https://github.com/google-github-actions/get-secretmanager-secrets`,
+  );
+
   try {
     // Fetch the list of secrets provided by the user.
     const secretsInput = getInput('secrets', { required: true });
