@@ -14,50 +14,50 @@
  * limitations under the License.
  */
 
-import { describe, it } from 'node:test';
+import { test } from 'node:test';
 import assert from 'node:assert';
 
 import { Reference, parseSecretsRefs } from '../src/reference';
 
-describe('Reference', async () => {
-  it('parses a full ref', async () => {
+test('Reference', { concurrency: true }, async (suite) => {
+  await suite.test('parses a full ref', async () => {
     const ref = new Reference('out:projects/fruits/secrets/apple/versions/123');
     const link = ref.selfLink();
     assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
   });
 
-  it('parses a full ref sans version', async () => {
+  await suite.test('parses a full ref sans version', async () => {
     const ref = new Reference('out:projects/fruits/secrets/apple');
     const link = ref.selfLink();
     assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
   });
 
-  it('parses a short ref', async () => {
+  await suite.test('parses a short ref', async () => {
     const ref = new Reference('out:fruits/apple/123');
     const link = ref.selfLink();
     assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
   });
 
-  it('parses a short ref sans version', async () => {
+  await suite.test('parses a short ref sans version', async () => {
     const ref = new Reference('out:fruits/apple');
     const link = ref.selfLink();
     assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
   });
 
-  it('errors on invalid format', async () => {
-    assert.rejects(async () => {
+  await suite.test('errors on invalid format', async () => {
+    await assert.rejects(async () => {
       return new Reference('out:projects/fruits/secrets/apple/versions/123/subversions/5');
     }, TypeError);
   });
 
-  it('errors on missing output', async () => {
-    assert.rejects(async () => {
+  await suite.test('errors on missing output', async () => {
+    await assert.rejects(async () => {
       return new Reference('fruits/apple/123');
     }, TypeError);
   });
 });
 
-describe('#parseSecretsRefs', async () => {
+test('#parseSecretsRefs', { concurrency: true }, async (suite) => {
   const cases = [
     {
       name: 'empty string',
@@ -110,16 +110,16 @@ describe('#parseSecretsRefs', async () => {
     },
   ];
 
-  cases.forEach((tc) => {
-    it(tc.name, async () => {
+  for await (const tc of cases) {
+    await suite.test(tc.name, async () => {
       if (tc.expected) {
         const actual = parseSecretsRefs(tc.input);
         assert.deepStrictEqual(actual, tc.expected);
       } else if (tc.error) {
-        assert.rejects(async () => {
+        await assert.rejects(async () => {
           parseSecretsRefs(tc.input);
         }, tc.error);
       }
     });
-  });
+  }
 });
