@@ -34,6 +34,11 @@ inputs:
     required: false
     default: '4'
 
+outputs:
+  token:
+    description: |-
+      Access token fetched from Secret Manager.
+
 branding:
   icon: 'lock'
   color: 'blue'
