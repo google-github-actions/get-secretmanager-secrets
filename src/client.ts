@@ -65,7 +65,10 @@ export class Client {
     this.auth = new GoogleAuth({
       scopes: [this.defaultScope],
     });
-    this.client = new HttpClient(userAgent);
+    this.client = new HttpClient(userAgent, [], {
+      allowRetries: true,
+      maxRetries: 3,
+    });
   }
 
   /**
