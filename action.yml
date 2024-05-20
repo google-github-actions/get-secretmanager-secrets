@@ -34,6 +34,13 @@ inputs:
     required: false
     default: '4'
 
+  set_env:
+    description: |-
+      This makes the fetched secrets available as environment variables. The
+      secrets will still be available as output, if you enable this.
+    required: false
+    default: false
+
 branding:
   icon: 'lock'
   color: 'blue'
