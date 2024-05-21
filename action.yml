@@ -34,7 +34,7 @@ inputs:
     required: false
     default: '4'
 
-  set_env:
+  export_to_environment:
     description: |-
       This makes the fetched secrets available as environment variables. The
       secrets will still be available as output, if you enable this.

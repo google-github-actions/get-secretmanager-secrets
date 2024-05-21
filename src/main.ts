@@ -14,15 +14,8 @@
  * limitations under the License.
  */
 
-import {
-  exportVariable,
-  getBooleanInput,
-  getInput,
-  setFailed,
-  setOutput,
-  setSecret,
-} from '@actions/core';
-import { errorMessage } from '@google-github-actions/actions-utils';
+import { exportVariable, getInput, setFailed, setOutput, setSecret } from '@actions/core';
+import { errorMessage, parseBoolean } from '@google-github-actions/actions-utils';
 
 import { Client } from './client';
 import { parseSecretsRefs } from './reference';
@@ -40,7 +33,7 @@ async function run(): Promise<void> {
     const minMaskLength = parseInt(getInput('min_mask_length'));
 
     // Get the setting for whether to export secrets as environment variables.
-    const setEnv = getBooleanInput('set_env');
+    const exportEnvironment = parseBoolean(getInput('export_to_environment'));
 
     // Create an API client.
     const client = new Client();
@@ -65,7 +58,7 @@ async function run(): Promise<void> {
 
       setOutput(ref.output, value);
 
-      if (setEnv) {
+      if (exportEnvironment) {
         exportVariable(ref.output, value);
       }
     }
