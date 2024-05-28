@@ -59,7 +59,9 @@ jobs:
 
 ## Inputs
 
--   `secrets`: (Required) The list of secrets to access and inject into the
+<!-- BEGIN_AUTOGEN_INPUTS -->
+
+-   <a name="secrets"></a><a href="#user-content-secrets"><code>secrets</code></a>: _(Required)_ The list of secrets to access and inject into the
     environment. Due to limitations with GitHub Actions inputs, this is
     specified as a string.
 
@@ -87,39 +89,43 @@ jobs:
     <project-id>/<secret-id>
     ```
 
-- `min_mask_length`: (Optional, default: "4") Minimum line length for a secret
-  to be masked. Extremely short secrets (e.g. "{" or "a") can make GitHub
-  Actions log output unreadable. This is especially important for multi-line
-  secrets, since each line of the secret is masked independently.
+-   <a name="min_mask_length"></a><a href="#user-content-min_mask_length"><code>min_mask_length</code></a>: _(Optional, default: `4`)_ Minimum line length for a secret to be masked. Extremely short secrets
+    (e.g. `{` or `a`) can make GitHub Actions log output unreadable. This is
+    especially important for multi-line secrets, since each line of the secret
+    is masked independently.
+
+-   <a name="export_to_environment"></a><a href="#user-content-export_to_environment"><code>export_to_environment</code></a>: _(Optional)_ Make the fetched secrets additionally available as environment variables.
+
+
+<!-- END_AUTOGEN_INPUTS -->
 
 
 ## Outputs
 
-Each secret is prefixed with an output name. The secret's resolved access value
-will be available at that output in future build steps.
+<!-- BEGIN_AUTOGEN_OUTPUTS -->
 
-For example:
+-   `secrets`: Each secret is prefixed with an output name. The secret's resolved access
+    value will be available at that output in future build steps. For example:
 
-```yaml
-jobs:
-  job_id:
-    steps:
-    - id: 'secrets'
-      uses: 'google-github-actions/get-secretmanager-secrets@v2'
-      with:
-        secrets: |-
-          token:my-project/docker-registry-token
-```
+    ```yaml
+    jobs:
+      job_id:
+        steps:
+        - id: 'secrets'
+          uses: 'google-github-actions/get-secretmanager-secrets@v2'
+          with:
+            secrets: |-
+              token:my-project/docker-registry-token
+    ```
 
-will be available in future steps as the output "token":
+    will be available in future steps as the output:
 
-```yaml
-# other step
-- id: 'publish'
-  uses: 'foo/bar@v1'
-  env:
-    TOKEN: '${{ steps.secrets.outputs.token }}'
-```
+    ```text
+    steps.secrets.outputs.token
+    ```
+
+
+<!-- END_AUTOGEN_OUTPUTS -->
 
 
 ## Authorization
