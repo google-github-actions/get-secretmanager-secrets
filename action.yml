@@ -65,6 +65,14 @@ inputs:
     required: false
     default: false
 
+  base64:
+    description: |-
+      Get secrets in Base64 format. This is useful if you are storing raw binary
+      data in your secrets, as you are not able to store that properly in an
+      environment variable.
+    required: false
+    default: false
+
 outputs:
   secrets:
     description: |-

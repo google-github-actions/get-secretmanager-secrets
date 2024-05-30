@@ -32,6 +32,7 @@ const userAgent = `google-github-actions:get-secretmanager-secrets/${appVersion}
  */
 type ClientOptions = {
   endpoint?: string;
+  base64?: boolean;
 };
 
 /**
@@ -59,9 +60,11 @@ export class Client {
   readonly auth: GoogleAuth;
   readonly endpoint: string;
   readonly client: HttpClient;
+  readonly base64: boolean;
 
   constructor(opts?: ClientOptions) {
     this.endpoint = opts?.endpoint || this.defaultEndpoint;
+    this.base64 = opts?.base64 || false;
     this.auth = new GoogleAuth({
       scopes: [this.defaultScope],
     });
@@ -101,6 +104,9 @@ export class Client {
         throw new Error(`Secret "${ref}" returned no data!`);
       }
 
+      if (this.base64) {
+        return b64data;
+      }
       return fromBase64(b64data);
     } catch (err) {
       const msg = errorMessage(err);

@@ -35,8 +35,13 @@ async function run(): Promise<void> {
     // Get the setting for whether to export secrets as environment variables.
     const exportEnvironment = parseBoolean(getInput('export_to_environment'));
 
+    // Get the setting for whether to export secrets in Base64 format.
+    const base64 = parseBoolean(getInput('base64'));
+
     // Create an API client.
-    const client = new Client();
+    const client = new Client({
+      base64,
+    });
 
     // Parse all the provided secrets into references.
     const secretsRefs = parseSecretsRefs(secretsInput);
