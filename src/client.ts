@@ -15,7 +15,7 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
-import { errorMessage, fromBase64 } from '@google-github-actions/actions-utils';
+import { errorMessage } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
@@ -77,7 +77,7 @@ export class Client {
    * @param ref String of the full secret reference.
    * @returns string secret contents.
    */
-  async accessSecret(ref: string): Promise<string> {
+  async accessSecret(ref: string, encoding: BufferEncoding): Promise<string> {
     if (!ref) {
       throw new Error(`Secret ref "${ref}" is empty!`);
     }
@@ -101,7 +101,9 @@ export class Client {
         throw new Error(`Secret "${ref}" returned no data!`);
       }
 
-      return fromBase64(b64data);
+      let str = b64data.replace(/-/g, '+').replace(/_/g, '/');
+      while (str.length % 4) str += '=';
+      return Buffer.from(str, 'base64').toString(encoding);
     } catch (err) {
       const msg = errorMessage(err);
       throw new Error(`Failed to access secret "${ref}": ${msg}`);

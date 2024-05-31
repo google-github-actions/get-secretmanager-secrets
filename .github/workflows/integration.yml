@@ -17,7 +17,6 @@ concurrency:
 
 jobs:
   integration:
-    if: ${{ github.event_name == 'push' || github.repository == github.event.pull_request.head.repo.full_name && github.actor != 'dependabot[bot]' }}
     permissions:
       contents: 'read'
       id-token: 'write'
@@ -48,3 +47,15 @@ jobs:
 
     - name: 'outputs'
       run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}'
+
+    - id: 'secrets-encoded'
+      name: 'secrets-encoded'
+      uses: './'
+      with:
+        encoding: 'hex'
+        secrets: |-
+          token:${{ vars.SECRET_NAME }}
+          password:${{ vars.SECRET_VERSION_NAME }}
+
+    - name: 'outputs-encoded'
+      run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}'
