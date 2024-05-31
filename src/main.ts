@@ -26,14 +26,10 @@ import { parseSecretsRefs } from './reference';
  */
 async function run(): Promise<void> {
   try {
-    // Fetch the list of secrets provided by the user.
     const secretsInput = getInput('secrets', { required: true });
-
-    // Get the minimum mask length.
     const minMaskLength = parseInt(getInput('min_mask_length'));
-
-    // Get the setting for whether to export secrets as environment variables.
     const exportEnvironment = parseBoolean(getInput('export_to_environment'));
+    const encoding = (getInput('encoding') || 'utf8') as BufferEncoding;
 
     // Create an API client.
     const client = new Client();
@@ -43,7 +39,7 @@ async function run(): Promise<void> {
 
     // Access and export each secret.
     for (const ref of secretsRefs) {
-      const value = await client.accessSecret(ref.selfLink());
+      const value = await client.accessSecret(ref.selfLink(), encoding);
 
       // Split multiline secrets by line break and mask each line.
       // Read more here: https://github.com/actions/runner/issues/161
