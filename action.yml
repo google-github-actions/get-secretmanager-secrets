@@ -67,11 +67,11 @@ inputs:
 
   encoding:
     description: |-
-      Encoding in which secrets will be exported into environment variables. For
-      secrets that cannot be represented in text, such as encryption key bytes,
-      choose an encoding that has a safe character set for environment variable
-      values like `base64` or `hex`. For more information about available
-      encoding types, please see the [Node.js Buffer and character
+      Encoding in which secrets will be exported into outputs (and environment
+      variables if `export_to_environment` is true). For secrets that cannot be
+      represented in text, such as encryption key bytes, choose an encoding that
+      has a safe character such as `base64` or `hex`. For more information about
+      available encoding types, please see the [Node.js Buffer and character
       encodings](https://nodejs.org/docs/latest/api/buffer.html#buffers-and-character-encodings).
     required: false
     default: 'utf8'
