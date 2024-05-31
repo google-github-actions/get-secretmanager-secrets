@@ -96,11 +96,11 @@ jobs:
 
 -   <a name="export_to_environment"></a><a href="#user-content-export_to_environment"><code>export_to_environment</code></a>: _(Optional)_ Make the fetched secrets additionally available as environment variables.
 
--   <a name="encoding"></a><a href="#user-content-encoding"><code>encoding</code></a>: _(Optional, default: `utf8`)_ Encoding in which secrets will be exported into environment variables. For
-    secrets that cannot be represented in text, such as encryption key bytes,
-    choose an encoding that has a safe character set for environment variable
-    values like `base64` or `hex`. For more information about available
-    encoding types, please see the [Node.js Buffer and character
+-   <a name="encoding"></a><a href="#user-content-encoding"><code>encoding</code></a>: _(Optional, default: `utf8`)_ Encoding in which secrets will be exported into outputs (and environment
+    variables if `export_to_environment` is true). For secrets that cannot be
+    represented in text, such as encryption key bytes, choose an encoding that
+    has a safe character such as `base64` or `hex`. For more information about
+    available encoding types, please see the [Node.js Buffer and character
     encodings](https://nodejs.org/docs/latest/api/buffer.html#buffers-and-character-encodings).
 
 
