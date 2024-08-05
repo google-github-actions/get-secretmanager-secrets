@@ -19,7 +19,6 @@ import { errorMessage } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
 const { version: appVersion } = require('../package.json');
 
 // userAgent is the user agent string.
