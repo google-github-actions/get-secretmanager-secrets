@@ -30,16 +30,17 @@ async function run(): Promise<void> {
     const minMaskLength = parseInt(getInput('min_mask_length'));
     const exportEnvironment = parseBoolean(getInput('export_to_environment'));
     const encoding = (getInput('encoding') || 'utf8') as BufferEncoding;
+    const location = (getInput('region') || '').trim();
 
     // Create an API client.
     const client = new Client();
 
     // Parse all the provided secrets into references.
-    const secretsRefs = parseSecretsRefs(secretsInput);
+    const secretsRefs = parseSecretsRefs(secretsInput, location);
 
     // Access and export each secret.
     for (const ref of secretsRefs) {
-      const value = await client.accessSecret(ref.selfLink(), encoding);
+      const value = await client.accessSecret(ref.selfLink(), location, encoding);
 
       // Split multiline secrets by line break and mask each line.
       // Read more here: https://github.com/actions/runner/issues/161

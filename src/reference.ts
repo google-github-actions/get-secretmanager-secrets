@@ -22,6 +22,7 @@ import { parseCSV } from '@google-github-actions/actions-utils';
  *     output:project/secret/version
  *
  * @param s String reference to parse
+ * @param location String location/region of secret
  * @returns Reference
  */
 export class Reference {
@@ -32,8 +33,9 @@ export class Reference {
   readonly project: string;
   readonly name: string;
   readonly version: string;
+  readonly location: string;
 
-  constructor(s: string) {
+  constructor(s: string, location: string) {
     const sParts = s.split(':');
     if (sParts.length < 2) {
       throw new TypeError(`Invalid reference "${s}" - missing destination`);
@@ -76,6 +78,7 @@ export class Reference {
         throw new TypeError(`Invalid reference "${s}" - unknown format`);
       }
     }
+    this.location = location;
   }
 
   /**
@@ -84,6 +87,9 @@ export class Reference {
    * @returns String self link.
    */
   public selfLink(): string {
+    if (this.location) {
+      return `projects/${this.project}/locations/${this.location}/secrets/${this.name}/versions/${this.version}`;
+    }
     return `projects/${this.project}/secrets/${this.name}/versions/${this.version}`;
   }
 }
@@ -93,15 +99,16 @@ export class Reference {
  *
  * @param input List of secrets, from the actions input, can be
  * comma-delimited or newline, whitespace around secret entires is removed.
+ * @param location String value of secret location/region
  * @returns Array of References for each secret, in the same order they were
  * given.
  */
-export function parseSecretsRefs(input: string): Reference[] {
+export function parseSecretsRefs(input: string, location: string): Reference[] {
   const secrets: Reference[] = [];
   for (const line of input.split(/\r|\n/)) {
     const pieces = parseCSV(line);
     for (const piece of pieces) {
-      secrets.push(new Reference(piece));
+      secrets.push(new Reference(piece, location));
     }
   }
   return secrets;

@@ -17,6 +17,7 @@
 import { GoogleAuth } from 'google-auth-library';
 import { errorMessage } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
+import { Reference } from './reference';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
 const { version: appVersion } = require('../package.json');
@@ -52,7 +53,8 @@ type AccessSecretVersionResponse = {
  * @returns Client
  */
 export class Client {
-  readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1';
+  // location placeholder for secret reference with location
+  readonly defaultEndpoint = 'https://secretmanager{location}.googleapis.com/v1';
   readonly defaultScope = 'https://www.googleapis.com/auth/cloud-platform';
 
   readonly auth: GoogleAuth;
@@ -76,14 +78,23 @@ export class Client {
    * @param ref String of the full secret reference.
    * @returns string secret contents.
    */
-  async accessSecret(ref: string, encoding: BufferEncoding): Promise<string> {
+  async accessSecret(ref: string, location: string, encoding: BufferEncoding): Promise<string> {
     if (!ref) {
       throw new Error(`Secret ref "${ref}" is empty!`);
+    }
+    // Updating endpoint with location if available in reference
+    let location_endpoint = this.endpoint;
+    if (location) {
+      // updating endpoint with location from reference (ie.secretmanager.{location}.rep.googleapis.com/v1 )
+      location_endpoint = this.endpoint.replace(/{location}/g, '.' + location + '.rep');
+    } else {
+      // In case of location is not available use global endpoint
+      location_endpoint = this.endpoint.replace(/{location}/g, '');
     }
 
     try {
       const token = await this.auth.getAccessToken();
-      const response = await this.client.get(`${this.endpoint}/${ref}:access`, {
+      const response = await this.client.get(`${location_endpoint}/${ref}:access`, {
         'Authorization': `Bearer ${token}`,
         'User-Agent': userAgent,
       });

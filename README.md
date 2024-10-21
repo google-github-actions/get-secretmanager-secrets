@@ -89,6 +89,14 @@ jobs:
     <project-id>/<secret-id>
     ```
 
+-   <a name="region"></a><a href="#user-content-region"><code>region</code></a>: _(Optional)_ Region/location to fetch secrets from specific region. List of supported regions for Secret Manager can be [seen here](https://cloud.google.com/secret-manager/docs/locations).
+    ```yaml
+    region: us-west1
+    secrets: |-
+      output1:my-project/my-secret1
+      output2:my-project/my-secret2
+    ```
+
 -   <a name="min_mask_length"></a><a href="#user-content-min_mask_length"><code>min_mask_length</code></a>: _(Optional, default: `4`)_ Minimum line length for a secret to be masked. Extremely short secrets
     (e.g. `{` or `a`) can make GitHub Actions log output unreadable. This is
     especially important for multi-line secrets, since each line of the secret
