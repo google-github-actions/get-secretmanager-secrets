@@ -17,7 +17,6 @@
 import { GoogleAuth } from 'google-auth-library';
 import { errorMessage } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
-import { Reference } from './reference';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
 const { version: appVersion } = require('../package.json');
