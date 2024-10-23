@@ -33,9 +33,9 @@ export class Reference {
   readonly project: string;
   readonly name: string;
   readonly version: string;
-  readonly location: string;
+  readonly location?: string;
 
-  constructor(s: string, location: string) {
+  constructor(s: string) {
     const sParts = s.split(':');
     if (sParts.length < 2) {
       throw new TypeError(`Invalid reference "${s}" - missing destination`);
@@ -46,19 +46,45 @@ export class Reference {
     const ref = sParts.slice(1).join(':');
     const refParts = ref.split('/');
     switch (refParts.length) {
-      // projects/<p>/secrets/<s>/versions/<v>
-      case 6: {
+      // projects/<p>/locations/<l>/secrets/<s>/versions/<v>
+      case 8: {
         this.project = refParts[1];
-        this.name = refParts[3];
-        this.version = refParts[5];
+        this.location = refParts[3];
+        this.name = refParts[5];
+        this.version = refParts[7];
         break;
       }
-      // projects/<p>/secrets/<s>
+      // projects/<p>/secrets/<s>/versions/<v> OR projects/<p>/locations/<l>/secerts/<s>
+      case 6: {
+        if (refParts[2] === 'secrets') {
+          this.project = refParts[1];
+          this.name = refParts[3];
+          this.version = refParts[5];
+          break;
+        } else if (refParts[2] === 'locations') {
+          this.project = refParts[1];
+          this.location = refParts[3];
+          this.name = refParts[5];
+          this.version = 'latest';
+          break;
+        } else {
+          throw new TypeError(`Invalid reference "${s}" - unknown format`);
+        }
+      }
+      // projects/<p>/secrets/<s> OR <p>/<l>/<s>/<v>
       case 4: {
-        this.project = refParts[1];
-        this.name = refParts[3];
-        this.version = 'latest';
-        break;
+        if (refParts[0] === 'projects') {
+          this.project = refParts[1];
+          this.name = refParts[3];
+          this.version = 'latest';
+          break;
+        } else {
+          this.project = refParts[0];
+          this.location = refParts[1];
+          this.name = refParts[2];
+          this.version = refParts[3];
+          break;
+        }
       }
       // <p>/<s>/<v>
       case 3: {
@@ -78,11 +104,11 @@ export class Reference {
         throw new TypeError(`Invalid reference "${s}" - unknown format`);
       }
     }
-    this.location = location;
   }
 
   /**
-   * Returns the full GCP self link.
+   * Returns the full GCP self link. For regional secrets, this will include the
+   * location path.
    *
    * @returns String self link.
    */
@@ -103,12 +129,12 @@ export class Reference {
  * @returns Array of References for each secret, in the same order they were
  * given.
  */
-export function parseSecretsRefs(input: string, location: string): Reference[] {
+export function parseSecretsRefs(input: string): Reference[] {
   const secrets: Reference[] = [];
   for (const line of input.split(/\r|\n/)) {
     const pieces = parseCSV(line);
     for (const piece of pieces) {
-      secrets.push(new Reference(piece, location));
+      secrets.push(new Reference(piece));
     }
   }
   return secrets;
