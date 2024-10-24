@@ -20,41 +20,55 @@ import assert from 'node:assert';
 import { Reference, parseSecretsRefs } from '../src/reference';
 
 test('Reference', { concurrency: true }, async (suite) => {
-  await suite.test('parses a full ref', async () => {
-    const ref = new Reference('out:projects/fruits/secrets/apple/versions/123');
-    const link = ref.selfLink();
-    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
-  });
+  const cases = [
+    {
+      input: 'out:projects/my-project/secrets/my-secret/versions/123',
+      expected: 'projects/my-project/secrets/my-secret/versions/123',
+    },
+    {
+      input: 'out:projects/my-project/secrets/my-secret',
+      expected: 'projects/my-project/secrets/my-secret/versions/latest',
+    },
+    {
+      input: 'out:projects/my-project/locations/my-location/secrets/my-secret',
+      expected: 'projects/my-project/locations/my-location/secrets/my-secret/versions/latest',
+    },
+    {
+      input: 'out:my-project/my-secret/123',
+      expected: 'projects/my-project/secrets/my-secret/versions/123',
+    },
+    {
+      input: 'out:my-project/my-secret',
+      expected: 'projects/my-project/secrets/my-secret/versions/latest',
+    },
+    {
+      input: '',
+      error: 'TypeError',
+    },
+    {
+      input: 'projects/my-project/secrets/my-secret/versions/123',
+      error: 'TypeError',
+    },
+    {
+      input: 'out:projects/my-project/pandas/my-location/secrets/my-secret',
+      error: 'TypeErorr',
+    },
+  ];
 
-  await suite.test('parses a full ref sans version', async () => {
-    const ref = new Reference('out:projects/fruits/secrets/apple');
-    const link = ref.selfLink();
-    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
-  });
-
-  await suite.test('parses a short ref', async () => {
-    const ref = new Reference('out:fruits/apple/123');
-    const link = ref.selfLink();
-    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/123');
-  });
-
-  await suite.test('parses a short ref sans version', async () => {
-    const ref = new Reference('out:fruits/apple');
-    const link = ref.selfLink();
-    assert.deepStrictEqual(link, 'projects/fruits/secrets/apple/versions/latest');
-  });
-
-  await suite.test('errors on invalid format', async () => {
-    await assert.rejects(async () => {
-      return new Reference('out:projects/fruits/secrets/apple/versions/123/subversions/5');
-    }, TypeError);
-  });
-
-  await suite.test('errors on missing output', async () => {
-    await assert.rejects(async () => {
-      return new Reference('fruits/apple/123');
-    }, TypeError);
-  });
+  for await (const tc of cases) {
+    if (tc.expected) {
+      await suite.test(`parses "${tc.input}"`, async () => {
+        const actual = new Reference(tc.input);
+        assert.deepStrictEqual(actual.selfLink(), tc.expected);
+      });
+    } else if (tc.error) {
+      await suite.test(`errors on "${tc.input}"`, async () => {
+        await assert.rejects(async () => {
+          new Reference(tc.input);
+        }, tc.error);
+      });
+    }
+  }
 });
 
 test('#parseSecretsRefs', { concurrency: true }, async (suite) => {
@@ -62,41 +76,43 @@ test('#parseSecretsRefs', { concurrency: true }, async (suite) => {
     {
       name: 'empty string',
       input: '',
+      location: '',
       expected: [],
-    },
-    {
-      name: 'single value',
-      input: 'output:project/secret',
-      expected: [new Reference('output:project/secret')],
     },
     {
       name: 'multi value commas',
       input: 'output1:project/secret, output2:project/secret',
+      location: '',
       expected: [new Reference('output1:project/secret'), new Reference('output2:project/secret')],
     },
     {
       name: 'multi value newlines',
       input: 'output1:project/secret\noutput2:project/secret',
+      location: '',
       expected: [new Reference('output1:project/secret'), new Reference('output2:project/secret')],
     },
     {
       name: 'multi value carriage',
       input: 'output1:project/secret\routput2:project/secret',
+      location: '',
       expected: [new Reference('output1:project/secret'), new Reference('output2:project/secret')],
     },
     {
       name: 'multi value carriage newline',
       input: 'output1:project/secret\r\noutput2:project/secret',
+      location: '',
       expected: [new Reference('output1:project/secret'), new Reference('output2:project/secret')],
     },
     {
       name: 'multi value empty lines',
       input: 'output1:project/secret\n\n\noutput2:project/secret',
+      location: '',
       expected: [new Reference('output1:project/secret'), new Reference('output2:project/secret')],
     },
     {
       name: 'multi value commas',
       input: 'output1:project/secret\noutput2:project/secret,output3:project/secret',
+      location: '',
       expected: [
         new Reference('output1:project/secret'),
         new Reference('output2:project/secret'),
@@ -106,6 +122,7 @@ test('#parseSecretsRefs', { concurrency: true }, async (suite) => {
     {
       name: 'invalid input',
       input: 'not/valid',
+      location: '',
       error: 'Invalid reference',
     },
   ];

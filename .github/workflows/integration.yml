@@ -44,9 +44,10 @@ jobs:
         secrets: |-
           token:${{ vars.SECRET_NAME }}
           password:${{ vars.SECRET_VERSION_NAME }}
+          regional:${{ vars.REGIONAL_SECRET_NAME }}
 
     - name: 'outputs'
-      run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}'
+      run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets.outputs.regional }}'
 
     - id: 'secrets-encoded'
       name: 'secrets-encoded'
@@ -56,6 +57,7 @@ jobs:
         secrets: |-
           token:${{ vars.SECRET_NAME }}
           password:${{ vars.SECRET_VERSION_NAME }}
+          regional:${{ vars.REGIONAL_SECRET_NAME }}
 
     - name: 'outputs-encoded'
-      run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}'
+      run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}${{ steps.secrets-encoded.outputs.regional }}'

@@ -15,8 +15,10 @@
  */
 
 import { GoogleAuth } from 'google-auth-library';
-import { errorMessage } from '@google-github-actions/actions-utils';
+import { errorMessage, expandUniverseEndpoints } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
+
+import { Reference } from './reference';
 
 // Do not listen to the linter - this can NOT be rewritten as an ES6 import statement.
 const { version: appVersion } = require('../package.json');
@@ -30,7 +32,7 @@ const userAgent = `google-github-actions:get-secretmanager-secrets/${appVersion}
  * @param endpoint GCP endpoint (useful for testing).
  */
 type ClientOptions = {
-  endpoint?: string;
+  universe?: string;
 };
 
 /**
@@ -52,22 +54,22 @@ type AccessSecretVersionResponse = {
  * @returns Client
  */
 export class Client {
-  readonly defaultEndpoint = 'https://secretmanager.googleapis.com/v1';
-  readonly defaultScope = 'https://www.googleapis.com/auth/cloud-platform';
+  readonly _endpoints = {
+    secretmanager: 'https://secretmanager.{universe}/v1',
+  };
 
   readonly auth: GoogleAuth;
-  readonly endpoint: string;
   readonly client: HttpClient;
 
   constructor(opts?: ClientOptions) {
-    this.endpoint = opts?.endpoint || this.defaultEndpoint;
     this.auth = new GoogleAuth({
-      scopes: [this.defaultScope],
+      scopes: ['https://www.googleapis.com/auth/cloud-platform'],
     });
     this.client = new HttpClient(userAgent, [], {
       allowRetries: true,
       maxRetries: 3,
     });
+    this._endpoints = expandUniverseEndpoints(this._endpoints, opts?.universe);
   }
 
   /**
@@ -76,14 +78,22 @@ export class Client {
    * @param ref String of the full secret reference.
    * @returns string secret contents.
    */
-  async accessSecret(ref: string, encoding: BufferEncoding): Promise<string> {
-    if (!ref) {
-      throw new Error(`Secret ref "${ref}" is empty!`);
+  async accessSecret(ref: Reference, encoding: BufferEncoding): Promise<string> {
+    const selfLink = ref.selfLink();
+    if (!selfLink) {
+      throw new Error(`Secret ref "${selfLink}" is empty!`);
     }
+    // Updating endpoint with location if available in reference
+    const endpoint = ref.location
+      ? this._endpoints.secretmanager.replace(
+          'https://secretmanager.',
+          `https://secretmanager.${ref.location}.rep.`,
+        )
+      : this._endpoints.secretmanager;
 
     try {
       const token = await this.auth.getAccessToken();
-      const response = await this.client.get(`${this.endpoint}/${ref}:access`, {
+      const response = await this.client.get(`${endpoint}/${selfLink}:access`, {
         'Authorization': `Bearer ${token}`,
         'User-Agent': userAgent,
       });
@@ -97,7 +107,7 @@ export class Client {
       const parsed: AccessSecretVersionResponse = JSON.parse(body);
       const b64data = parsed.payload.data;
       if (!b64data) {
-        throw new Error(`Secret "${ref}" returned no data!`);
+        throw new Error(`Secret "${selfLink}" returned no data!`);
       }
 
       let str = b64data.replace(/-/g, '+').replace(/_/g, '/');
@@ -105,7 +115,7 @@ export class Client {
       return Buffer.from(str, 'base64').toString(encoding);
     } catch (err) {
       const msg = errorMessage(err);
-      throw new Error(`Failed to access secret "${ref}": ${msg}`);
+      throw new Error(`Failed to access secret "${selfLink}": ${msg}`);
     }
   }
 }

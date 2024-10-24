@@ -22,6 +22,7 @@ import { parseCSV } from '@google-github-actions/actions-utils';
  *     output:project/secret/version
  *
  * @param s String reference to parse
+ * @param location String location/region of secret
  * @returns Reference
  */
 export class Reference {
@@ -32,6 +33,7 @@ export class Reference {
   readonly project: string;
   readonly name: string;
   readonly version: string;
+  readonly location?: string;
 
   constructor(s: string) {
     const sParts = s.split(':');
@@ -44,19 +46,45 @@ export class Reference {
     const ref = sParts.slice(1).join(':');
     const refParts = ref.split('/');
     switch (refParts.length) {
-      // projects/<p>/secrets/<s>/versions/<v>
-      case 6: {
+      // projects/<p>/locations/<l>/secrets/<s>/versions/<v>
+      case 8: {
         this.project = refParts[1];
-        this.name = refParts[3];
-        this.version = refParts[5];
+        this.location = refParts[3];
+        this.name = refParts[5];
+        this.version = refParts[7];
         break;
       }
-      // projects/<p>/secrets/<s>
+      // projects/<p>/secrets/<s>/versions/<v> OR projects/<p>/locations/<l>/secerts/<s>
+      case 6: {
+        if (refParts[2] === 'secrets') {
+          this.project = refParts[1];
+          this.name = refParts[3];
+          this.version = refParts[5];
+          break;
+        } else if (refParts[2] === 'locations') {
+          this.project = refParts[1];
+          this.location = refParts[3];
+          this.name = refParts[5];
+          this.version = 'latest';
+          break;
+        } else {
+          throw new TypeError(`Invalid reference "${s}" - unknown format`);
+        }
+      }
+      // projects/<p>/secrets/<s> OR <p>/<l>/<s>/<v>
       case 4: {
-        this.project = refParts[1];
-        this.name = refParts[3];
-        this.version = 'latest';
-        break;
+        if (refParts[0] === 'projects') {
+          this.project = refParts[1];
+          this.name = refParts[3];
+          this.version = 'latest';
+          break;
+        } else {
+          this.project = refParts[0];
+          this.location = refParts[1];
+          this.name = refParts[2];
+          this.version = refParts[3];
+          break;
+        }
       }
       // <p>/<s>/<v>
       case 3: {
@@ -79,11 +107,15 @@ export class Reference {
   }
 
   /**
-   * Returns the full GCP self link.
+   * Returns the full GCP self link. For regional secrets, this will include the
+   * location path.
    *
    * @returns String self link.
    */
   public selfLink(): string {
+    if (this.location) {
+      return `projects/${this.project}/locations/${this.location}/secrets/${this.name}/versions/${this.version}`;
+    }
     return `projects/${this.project}/secrets/${this.name}/versions/${this.version}`;
   }
 }
@@ -93,6 +125,7 @@ export class Reference {
  *
  * @param input List of secrets, from the actions input, can be
  * comma-delimited or newline, whitespace around secret entires is removed.
+ * @param location String value of secret location/region
  * @returns Array of References for each secret, in the same order they were
  * given.
  */

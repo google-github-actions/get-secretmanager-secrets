@@ -103,6 +103,11 @@ jobs:
     available encoding types, please see the [Node.js Buffer and character
     encodings](https://nodejs.org/docs/latest/api/buffer.html#buffers-and-character-encodings).
 
+-   <a name="universe"></a><a href="#user-content-universe"><code>universe</code></a>: _(Optional, default: `googleapis.com`)_ The Google Cloud universe to use for constructing API endpoints. The
+    default universe is "googleapis.com", which corresponds to
+    https://cloud.google.com. Trusted Partner Cloud and Google Distributed
+    Hosted Cloud should set this to their universe address.
+
 
 <!-- END_AUTOGEN_INPUTS -->
 
