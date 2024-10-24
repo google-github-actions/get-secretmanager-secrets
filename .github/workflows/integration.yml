@@ -47,7 +47,7 @@ jobs:
           regional:${{ vars.REGIONAL_SECRET_NAME }}
 
     - name: 'outputs'
-      run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets-encoded.outputs.regional }}'
+run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets.outputs.regional }}'
 
     - id: 'secrets-encoded'
       name: 'secrets-encoded'
