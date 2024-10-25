@@ -61,11 +61,11 @@ jobs:
 
 <!-- BEGIN_AUTOGEN_INPUTS -->
 
--   <a name="secrets"></a><a href="#user-content-secrets"><code>secrets</code></a>: _(Required)_ The list of secrets to access and inject into the
-    environment. Due to limitations with GitHub Actions inputs, this is
-    specified as a string.
-
-    You can specify multiple secrets by putting each secret on its own line:
+-   <a name="secrets"></a><a href="#user-content-secrets"><code>secrets</code></a>: _(Required)_ List of secrets to access and inject into the environment. These are
+    comma-separated or newline-separated `OUTPUTNAME:SECRET`. Output names or
+    secret names that contain separators must be escaped with a backslash
+    (e.g. `\,` or `\\n`) unless quoted. Any leading or trailing whitespace is
+    trimmed unless values are quoted.
 
     ```yaml
     secrets: |-
