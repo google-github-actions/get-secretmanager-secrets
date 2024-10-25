@@ -43,8 +43,15 @@ export class Reference {
 
     this.output = sParts[0].trim();
 
-    const ref = sParts.slice(1).join(':');
-    const refParts = ref.split('/');
+    // Trim each piece and remove empty entries
+    const refParts =
+      sParts
+        ?.slice(1)
+        ?.at(0)
+        ?.split('/')
+        ?.map((p) => (p || '').trim())
+        ?.filter((p) => p !== '') || [];
+
     switch (refParts.length) {
       // projects/<p>/locations/<l>/secrets/<s>/versions/<v>
       case 8: {
