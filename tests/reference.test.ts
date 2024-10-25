@@ -42,6 +42,14 @@ test('Reference', { concurrency: true }, async (suite) => {
       expected: 'projects/my-project/secrets/my-secret/versions/latest',
     },
     {
+      input: 'out: my-project/my-secret',
+      expected: 'projects/my-project/secrets/my-secret/versions/latest',
+    },
+    {
+      input: 'out : projects/ my-project/   secrets/	my-secret',
+      expected: 'projects/my-project/secrets/my-secret/versions/latest',
+    },
+    {
       input: '',
       error: 'TypeError',
     },
