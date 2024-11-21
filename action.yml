@@ -85,6 +85,11 @@ inputs:
     required: false
     default: 'googleapis.com'
 
+  impersonate_service_account:
+    description: |-
+      The impersonated service account to use for the request.
+    required: false
+
 outputs:
   secrets:
     description: |-

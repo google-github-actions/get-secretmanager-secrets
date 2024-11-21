@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { GoogleAuth } from 'google-auth-library';
+import { GoogleAuth, ImpersonatedOptions } from 'google-auth-library';
 import { errorMessage, expandUniverseEndpoints } from '@google-github-actions/actions-utils';
 import { HttpClient } from '@actions/http-client';
 
@@ -33,6 +33,7 @@ const userAgent = `google-github-actions:get-secretmanager-secrets/${appVersion}
  */
 type ClientOptions = {
   universe?: string;
+  impersonateServiceAccount?: string;
 };
 
 /**
@@ -62,8 +63,15 @@ export class Client {
   readonly client: HttpClient;
 
   constructor(opts?: ClientOptions) {
+    //Impersonate the service account if provided
+    const clientOptions: ImpersonatedOptions = {};
+    if (opts?.impersonateServiceAccount) {
+      clientOptions.targetPrincipal = opts.impersonateServiceAccount;
+    }
+
     this.auth = new GoogleAuth({
       scopes: ['https://www.googleapis.com/auth/cloud-platform'],
+      clientOptions,
     });
     this.client = new HttpClient(userAgent, [], {
       allowRetries: true,

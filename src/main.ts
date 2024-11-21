@@ -31,10 +31,12 @@ async function run(): Promise<void> {
     const minMaskLength = parseInt(getInput('min_mask_length'));
     const exportEnvironment = parseBoolean(getInput('export_to_environment'));
     const encoding = (getInput('encoding') || 'utf8') as BufferEncoding;
+    const impersonateServiceAccount = getInput('impersonate_service_account');
 
     // Create an API client.
     const client = new Client({
       universe: universe,
+      impersonateServiceAccount: impersonateServiceAccount,
     });
 
     // Parse all the provided secrets into references.
