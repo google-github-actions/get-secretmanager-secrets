@@ -23,41 +23,41 @@ jobs:
     runs-on: 'ubuntu-latest'
 
     steps:
-    - uses: 'actions/checkout@v4'
+      - uses: 'actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683' # ratchet:actions/checkout@v4
 
-    - uses: 'actions/setup-node@v4'
-      with:
-        node-version: '20.x'
+      - uses: 'actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a' # ratchet:actions/setup-node@v4
+        with:
+          node-version: '20.x'
 
-    - name: 'npm build'
-      run: 'npm ci && npm run build'
+      - name: 'npm build'
+        run: 'npm ci && npm run build'
 
-    - uses: 'google-github-actions/auth@v2'
-      with:
-        workload_identity_provider: '${{ vars.WIF_PROVIDER_NAME }}'
-        service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
+      - uses: 'google-github-actions/auth@v2' # ratchet:exclude
+        with:
+          workload_identity_provider: '${{ vars.WIF_PROVIDER_NAME }}'
+          service_account: '${{ vars.SERVICE_ACCOUNT_EMAIL }}'
 
-    - id: 'secrets'
-      name: 'secrets'
-      uses: './'
-      with:
-        secrets: |-
-          token:${{ vars.SECRET_NAME }}
-          password:${{ vars.SECRET_VERSION_NAME }}
-          regional:${{ vars.REGIONAL_SECRET_NAME }}
+      - id: 'secrets'
+        name: 'secrets'
+        uses: './'
+        with:
+          secrets: |-
+            token:${{ vars.SECRET_NAME }}
+            password:${{ vars.SECRET_VERSION_NAME }}
+            regional:${{ vars.REGIONAL_SECRET_NAME }}
 
-    - name: 'outputs'
-      run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets.outputs.regional }}'
+      - name: 'outputs'
+        run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets.outputs.regional }}'
 
-    - id: 'secrets-encoded'
-      name: 'secrets-encoded'
-      uses: './'
-      with:
-        encoding: 'hex'
-        secrets: |-
-          token:${{ vars.SECRET_NAME }}
-          password:${{ vars.SECRET_VERSION_NAME }}
-          regional:${{ vars.REGIONAL_SECRET_NAME }}
+      - id: 'secrets-encoded'
+        name: 'secrets-encoded'
+        uses: './'
+        with:
+          encoding: 'hex'
+          secrets: |-
+            token:${{ vars.SECRET_NAME }}
+            password:${{ vars.SECRET_VERSION_NAME }}
+            regional:${{ vars.REGIONAL_SECRET_NAME }}
 
-    - name: 'outputs-encoded'
-      run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}${{ steps.secrets-encoded.outputs.regional }}'
+      - name: 'outputs-encoded'
+        run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}${{ steps.secrets-encoded.outputs.regional }}'
