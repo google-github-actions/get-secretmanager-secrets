@@ -1,0 +1,4 @@
+paths:
+  '.github/workflows/integration.yml':
+    ignore:
+      - 'property ".+" is not defined in object type'

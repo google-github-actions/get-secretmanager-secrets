@@ -27,7 +27,7 @@ jobs:
 
       - uses: 'actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a' # ratchet:actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version-file: 'package.json'
 
       - name: 'npm build'
         run: 'npm ci && npm run build'
@@ -47,7 +47,12 @@ jobs:
             regional:${{ vars.REGIONAL_SECRET_NAME }}
 
       - name: 'outputs'
-        run: echo '${{ steps.secrets.outputs.token }}${{ steps.secrets.outputs.password }}${{ steps.secrets.outputs.regional }}'
+        env:
+          TOKEN: '${{ steps.secrets.outputs.token }}'
+          PASSWORD: '${{ steps.secrets.outputs.password }}'
+          REGIONAL: '${{ steps.secrets.outputs.regional }}'
+        run: |-
+          echo '${TOKEN}${PASSWORD}${REGIONAL}'
 
       - id: 'secrets-encoded'
         name: 'secrets-encoded'
@@ -60,4 +65,9 @@ jobs:
             regional:${{ vars.REGIONAL_SECRET_NAME }}
 
       - name: 'outputs-encoded'
-        run: echo '${{ steps.secrets-encoded.outputs.token }}${{ steps.secrets-encoded.outputs.password }}${{ steps.secrets-encoded.outputs.regional }}'
+        env:
+          TOKEN: '${{ steps.secrets.outputs.token }}'
+          PASSWORD: '${{ steps.secrets.outputs.password }}'
+          REGIONAL: '${{ steps.secrets.outputs.regional }}'
+        run: |-
+          echo '${TOKEN}${PASSWORD}${REGIONAL}'
