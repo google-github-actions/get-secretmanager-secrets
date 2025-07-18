@@ -66,8 +66,8 @@ jobs:
 
       - name: 'outputs-encoded'
         env:
-          TOKEN: '${{ steps.secrets.outputs.token }}'
-          PASSWORD: '${{ steps.secrets.outputs.password }}'
-          REGIONAL: '${{ steps.secrets.outputs.regional }}'
+          TOKEN: '${{ steps.secrets-encoded.outputs.token }}'
+          PASSWORD: '${{ steps.secrets-encoded.outputs.password }}'
+          REGIONAL: '${{ steps.secrets-encoded.outputs.regional }}'
         run: |-
           echo '${TOKEN}${PASSWORD}${REGIONAL}'
