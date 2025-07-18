@@ -1,6 +1,6 @@
 {
   "name": "get-secretmanager-secrets",
-  "version": "2.2.3",
+  "version": "2.2.4",
   "description": "Get Secret Manager secrets GitHub action",
   "main": "dist/index.js",
   "scripts": {
