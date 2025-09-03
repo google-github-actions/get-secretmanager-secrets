@@ -4,15 +4,15 @@
   "description": "Get Secret Manager secrets GitHub action",
   "main": "dist/index.js",
   "scripts": {
-    "build": "ncc build -m src/main.ts",
+    "build": "rm -rf dist/ && ncc build -m src/main.ts -o dist/main",
     "docs": "./node_modules/.bin/actions-gen-readme",
     "lint": "eslint .",
     "format": "eslint . --fix",
     "test": "bash ./bin/runTests.sh"
   },
   "engines": {
-    "node": "20.x",
-    "npm": "10.x"
+    "node": ">= 20.x",
+    "npm": ">= 11.x"
   },
   "repository": {
     "type": "git",
@@ -29,9 +29,8 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/http-client": "^2.2.3",
-    "@google-github-actions/actions-utils": "^0.8.8",
-    "google-auth-library": "^10.1.0",
-    "npm-check-updates": "^18.0.1"
+    "@google-github-actions/actions-utils": "^0.8.10",
+    "google-auth-library": "^10.1.0"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.1",
