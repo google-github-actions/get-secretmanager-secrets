@@ -61,7 +61,7 @@ jobs:
 
 <!-- BEGIN_AUTOGEN_INPUTS -->
 
--   <a name="secrets"></a><a href="#user-content-secrets"><code>secrets</code></a>: _(Required)_ List of secrets to access and inject into the environment. These are
+-   <a name="__input_secrets"></a><a href="#user-content-__input_secrets"><code>secrets</code></a>: _(Required)_ List of secrets to access and inject into the environment. These are
     comma-separated or newline-separated `OUTPUTNAME:SECRET`. Output names or
     secret names that contain separators must be escaped with a backslash
     (e.g. `\,` or `\\n`) unless quoted. Any leading or trailing whitespace is
@@ -89,21 +89,21 @@ jobs:
     <project-id>/<secret-id>
     ```
 
--   <a name="min_mask_length"></a><a href="#user-content-min_mask_length"><code>min_mask_length</code></a>: _(Optional, default: `4`)_ Minimum line length for a secret to be masked. Extremely short secrets
+-   <a name="__input_min_mask_length"></a><a href="#user-content-__input_min_mask_length"><code>min_mask_length</code></a>: _(Optional, default: `4`)_ Minimum line length for a secret to be masked. Extremely short secrets
     (e.g. `{` or `a`) can make GitHub Actions log output unreadable. This is
     especially important for multi-line secrets, since each line of the secret
     is masked independently.
 
--   <a name="export_to_environment"></a><a href="#user-content-export_to_environment"><code>export_to_environment</code></a>: _(Optional)_ Make the fetched secrets additionally available as environment variables.
+-   <a name="__input_export_to_environment"></a><a href="#user-content-__input_export_to_environment"><code>export_to_environment</code></a>: _(Optional)_ Make the fetched secrets additionally available as environment variables.
 
--   <a name="encoding"></a><a href="#user-content-encoding"><code>encoding</code></a>: _(Optional, default: `utf8`)_ Encoding in which secrets will be exported into outputs (and environment
+-   <a name="__input_encoding"></a><a href="#user-content-__input_encoding"><code>encoding</code></a>: _(Optional, default: `utf8`)_ Encoding in which secrets will be exported into outputs (and environment
     variables if `export_to_environment` is true). For secrets that cannot be
     represented in text, such as encryption key bytes, choose an encoding that
     has a safe character such as `base64` or `hex`. For more information about
     available encoding types, please see the [Node.js Buffer and character
     encodings](https://nodejs.org/docs/latest/api/buffer.html#buffers-and-character-encodings).
 
--   <a name="universe"></a><a href="#user-content-universe"><code>universe</code></a>: _(Optional, default: `googleapis.com`)_ The Google Cloud universe to use for constructing API endpoints. The
+-   <a name="__input_universe"></a><a href="#user-content-__input_universe"><code>universe</code></a>: _(Optional, default: `googleapis.com`)_ The Google Cloud universe to use for constructing API endpoints. The
     default universe is "googleapis.com", which corresponds to
     https://cloud.google.com. Trusted Partner Cloud and Google Distributed
     Hosted Cloud should set this to their universe address.
@@ -116,7 +116,7 @@ jobs:
 
 <!-- BEGIN_AUTOGEN_OUTPUTS -->
 
--   `secrets`: Each secret is prefixed with an output name. The secret's resolved access
+-   <a name="__output_secrets"></a><a href="#user-content-__output_secrets"><code>secrets</code></a>: Each secret is prefixed with an output name. The secret's resolved access
     value will be available at that output in future build steps. For example:
 
     ```yaml
