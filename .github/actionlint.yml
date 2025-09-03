@@ -1,4 +1,9 @@
 paths:
+  '**/*.yml':
+    ignore:
+      # https://github.com/rhysd/actionlint/issues/559
+      - 'invalid runner name "node24"'
+
   '.github/workflows/integration.yml':
     ignore:
       - 'property ".+" is not defined in object type'

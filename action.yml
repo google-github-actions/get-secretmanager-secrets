@@ -96,7 +96,7 @@ outputs:
         job_id:
           steps:
           - id: 'secrets'
-            uses: 'google-github-actions/get-secretmanager-secrets@v2'
+            uses: 'google-github-actions/get-secretmanager-secrets@v3'
             with:
               secrets: |-
                 token:my-project/docker-registry-token
@@ -113,5 +113,5 @@ branding:
   color: 'blue'
 
 runs:
-  using: 'node20'
+  using: 'node24'
   main: 'dist/main/index.js'
