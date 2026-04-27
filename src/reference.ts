@@ -111,6 +111,19 @@ export class Reference {
         throw new TypeError(`Invalid reference "${s}" - unknown format`);
       }
     }
+
+    // Validate location against GCP region format to prevent SSRF via URL
+    // fragment/query injection. A valid GCP region is two or more lowercase
+    // letter groups joined by hyphens (e.g. "us-central1", "europe-west4").
+    // Characters like '#' or '?' would survive the split-based parsing above
+    // and get interpolated directly into the endpoint URL, potentially
+    // redirecting requests — including Bearer tokens — to attacker-controlled
+    // hosts.
+    if (this.location && !/^[a-z]+-[a-z0-9]+$/.test(this.location)) {
+      throw new Error(
+        `Invalid location format: "${this.location}". Must be a valid GCP region (e.g. "us-central1", "europe-west4").`,
+      );
+    }
   }
 
   /**

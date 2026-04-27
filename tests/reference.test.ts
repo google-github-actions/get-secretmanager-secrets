@@ -61,6 +61,30 @@ test('Reference', { concurrency: true }, async (suite) => {
       input: 'out:projects/my-project/pandas/my-location/secrets/my-secret',
       error: 'TypeErorr',
     },
+
+    // SSRF-via-fragment/query injection: invalid location values must be
+    // rejected before they reach URL construction in the HTTP client.
+    {
+      // '#' would terminate the URL host component and redirect the request
+      // (including the Bearer token) to an attacker-controlled host.
+      input: 'out:my-project/attacker.com#/my-secret/latest',
+      error: 'Invalid location format',
+    },
+    {
+      // '?' introduces a query string that can be used similarly.
+      input: 'out:my-project/attacker.com?foo=/my-secret/latest',
+      error: 'Invalid location format',
+    },
+    {
+      // '@' could be used in user-info position to redirect to a different host.
+      input: 'out:my-project/attacker.com@evil.host/my-secret/latest',
+      error: 'Invalid location format',
+    },
+    {
+      // Upper-case letters are not valid in GCP region names.
+      input: 'out:my-project/US-CENTRAL1/my-secret/latest',
+      error: 'Invalid location format',
+    },
   ];
 
   for await (const tc of cases) {
