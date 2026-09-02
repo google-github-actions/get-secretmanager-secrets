@@ -21,6 +21,40 @@ import { Client } from './client';
 import { parseSecretsRefs } from './reference';
 
 /**
+ * DEFAULT_MIN_MASK_LENGTH is the fallback minimum line length for masking. It
+ * mirrors the default declared for the `min_mask_length` input in action.yml,
+ * which the Actions runner only applies when the input key is absent.
+ */
+const DEFAULT_MIN_MASK_LENGTH = 4;
+
+/**
+ * parseMinMaskLength parses the given value as the minimum length for a secret
+ * line to be masked. An empty value returns the default. A value that is not a
+ * non-negative integer throws, because a value that fails to parse would
+ * otherwise disable masking for every line without any indication.
+ *
+ * @param input Value to parse.
+ * @param defaultValue Value to return when the input is empty.
+ * @returns Minimum line length for masking.
+ */
+export function parseMinMaskLength(
+  input: string,
+  defaultValue: number = DEFAULT_MIN_MASK_LENGTH,
+): number {
+  const str = (input || '').trim();
+  if (str === '') {
+    return defaultValue;
+  }
+
+  const parsed = Number(str);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`invalid min_mask_length value "${str}", expected a non-negative integer`);
+  }
+
+  return parsed;
+}
+
+/**
  * Executes the main action. It includes the main business logic and is the
  * primary entry point. It is documented inline.
  */
@@ -28,7 +62,7 @@ async function run(): Promise<void> {
   try {
     const universe = getInput('universe');
     const secretsInput = getInput('secrets', { required: true });
-    const minMaskLength = parseInt(getInput('min_mask_length'));
+    const minMaskLength = parseMinMaskLength(getInput('min_mask_length'));
     const exportEnvironment = parseBoolean(getInput('export_to_environment'));
     const encoding = (getInput('encoding') || 'utf8') as BufferEncoding;
 
